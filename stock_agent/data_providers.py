@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import random
+import re
 import time
 from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta
@@ -13,6 +15,7 @@ from .config import AgentConfig
 from .models import Bar, Instrument
 
 T = TypeVar("T")
+HISTORY_CACHE_TTL_SECONDS = 30 * 60
 
 
 class MarketDataProvider(ABC):
@@ -122,6 +125,7 @@ class SyntheticMarketDataProvider(MarketDataProvider):
 class AkshareMarketDataProvider(MarketDataProvider):
     def __init__(self, config: AgentConfig) -> None:
         self.adjust = config.adjust
+        self.cache_dir = Path(config.data_dir) / "akshare_cache"
 
     def history(
         self,
@@ -139,6 +143,10 @@ class AkshareMarketDataProvider(MarketDataProvider):
         start_date = format_ak_date(start or date.today() - timedelta(days=365))
         end_date = format_ak_date(end or date.today())
         symbol = instrument.provider_symbol or instrument.symbol
+        cache_path = self.history_cache_path(instrument, start_date, end_date)
+        cached = read_cached_history(cache_path)
+        if cached is not None:
+            return cached
 
         kind = instrument.kind.lower()
         if kind in {"index", "cn_index", "a_index"}:
@@ -220,7 +228,20 @@ class AkshareMarketDataProvider(MarketDataProvider):
             bars = [bar for bar in bars if bar.date >= start]
         if end:
             bars = [bar for bar in bars if bar.date <= end]
-        return sorted(bars, key=lambda x: x.date)
+        bars = sorted(bars, key=lambda x: x.date)
+        write_cached_history(cache_path, bars)
+        return bars
+
+    def history_cache_path(
+        self,
+        instrument: Instrument,
+        start_date: str,
+        end_date: str,
+    ) -> Path:
+        symbol = safe_cache_part(instrument.provider_symbol or instrument.symbol)
+        kind = safe_cache_part(instrument.kind)
+        adjust = safe_cache_part(self.adjust)
+        return self.cache_dir / f"{kind}_{symbol}_{adjust}_{start_date}_{end_date}.json"
 
 
 def provider_from_config(config: AgentConfig) -> MarketDataProvider:
@@ -287,6 +308,53 @@ def cn_index_symbol_for_sina(symbol: str) -> str:
     if value.startswith("000"):
         return f"sh{value}"
     return value
+
+
+def read_cached_history(path: Path) -> Optional[List[Bar]]:
+    if not path.exists():
+        return None
+    if time.time() - path.stat().st_mtime > HISTORY_CACHE_TTL_SECONDS:
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return [
+            Bar(
+                date=parse_date(str(item["date"])),
+                open=float(item["open"]),
+                high=float(item["high"]),
+                low=float(item["low"]),
+                close=float(item["close"]),
+                volume=float(item.get("volume") or 0),
+                amount=float(item.get("amount") or 0),
+            )
+            for item in raw
+        ]
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def write_cached_history(path: Path, bars: List[Bar]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = [
+            {
+                "date": bar.date.isoformat(),
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "amount": bar.amount,
+            }
+            for bar in bars
+        ]
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        return
+
+
+def safe_cache_part(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z._-]+", "_", value.strip() or "unknown")
 
 
 def call_with_retries(callback: Callable[[], T], attempts: int = 3) -> T:

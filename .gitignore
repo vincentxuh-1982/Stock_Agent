@@ -12,6 +12,7 @@ dist/
 # Local user data. Keep personal watchlists, holdings, trades, and reports out of Git.
 config/local.json
 data/portfolio.local.json
+data/market/
 reports/
 
 # Temporary smoke-test/runtime files.

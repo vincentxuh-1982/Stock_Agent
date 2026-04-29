@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import math
+import re
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -9,6 +13,7 @@ from .config import AgentConfig
 from .data_providers import (
     MarketDataProvider,
     call_with_retries,
+    cn_index_symbol_for_sina,
     normalize_a_symbol,
     normalize_hk_symbol,
     provider_from_config,
@@ -39,30 +44,51 @@ def run_realtime_analysis(
     session_by_symbol = {
         instrument_key(status.instrument): status for status in active_sessions
     }
-    for instrument in active_instruments:
-        quote = quotes.get(instrument.symbol)
-        if quote is None:
-            errors.append(f"{instrument.symbol} {instrument.name}: 未获取到实时行情")
-            continue
-        try:
-            bars = provider.history(instrument, start=start, end=end)
-            if len(bars) < 30:
-                raise ValueError(f"not enough bars: {len(bars)}")
-            technical = analyze_instrument(instrument, bars[-config.lookback_days :])
-            results.append(
-                analyze_realtime(
-                    instrument,
-                    quote,
-                    technical,
-                    bars,
-                    session=session_by_symbol.get(instrument_key(instrument)),
-                )
-            )
-        except Exception as exc:
-            message = str(exc).replace("\n", " ")
-            errors.append(f"{instrument.symbol} {instrument.name}: {message[:180]}")
+    workers = min(6, max(1, len(active_instruments)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                analyze_realtime_instrument,
+                provider,
+                instrument,
+                quotes.get(instrument.symbol),
+                config,
+                start,
+                end,
+                session_by_symbol.get(instrument_key(instrument)),
+            ): instrument
+            for instrument in active_instruments
+        }
+        for future in as_completed(futures):
+            result, message = future.result()
+            if result is not None:
+                results.append(result)
+            elif message:
+                errors.append(message)
 
     return sorted(results, key=lambda item: item.urgency, reverse=True), inactive_sessions, errors
+
+
+def analyze_realtime_instrument(
+    provider: MarketDataProvider,
+    instrument: Instrument,
+    quote: Optional[Quote],
+    config: AgentConfig,
+    start: date,
+    end: date,
+    session: Optional[MarketSessionStatus],
+) -> Tuple[Optional[RealtimeResult], str]:
+    if quote is None:
+        return None, f"{instrument.symbol} {instrument.name}: 未获取到实时行情"
+    try:
+        bars = provider.history(instrument, start=start, end=end)
+        if len(bars) < 30:
+            raise ValueError(f"not enough bars: {len(bars)}")
+        technical = analyze_instrument(instrument, bars[-config.lookback_days :])
+        return analyze_realtime(instrument, quote, technical, bars, session=session), ""
+    except Exception as exc:
+        message = str(exc).replace("\n", " ")
+        return None, f"{instrument.symbol} {instrument.name}: {message[:180]}"
 
 
 class RealtimeQuoteProvider:
@@ -114,23 +140,33 @@ class AkshareRealtimeQuoteProvider(RealtimeQuoteProvider):
         instruments: Iterable[Instrument],
         errors: List[str],
     ) -> Dict[str, Quote]:
+        instruments_list = list(instruments)
+        fast_errors: List[str] = []
+        output = load_tencent_quotes(instruments_list, fast_errors)
+        missing = [
+            instrument
+            for instrument in instruments_list
+            if instrument.symbol not in output
+        ]
+        if not missing:
+            return output
+
         try:
             import akshare as ak  # type: ignore
         except ImportError as exc:
+            errors.extend(fast_errors)
             raise RuntimeError(
                 "AKShare realtime provider requires `python3 -m pip install -r requirements.txt`."
             ) from exc
 
-        instruments_list = list(instruments)
-        output: Dict[str, Quote] = {}
-        cn_indices = [item for item in instruments_list if is_cn_index(item)]
-        hk_indices = [item for item in instruments_list if is_hk_index(item)]
+        cn_indices = [item for item in missing if is_cn_index(item)]
+        hk_indices = [item for item in missing if is_hk_index(item)]
         a_stocks = [
             item
-            for item in instruments_list
+            for item in missing
             if not is_hk_instrument(item) and not is_cn_index(item)
         ]
-        hk_stocks = [item for item in instruments_list if is_hk_stock(item)]
+        hk_stocks = [item for item in missing if is_hk_stock(item)]
 
         if cn_indices:
             output.update(load_cn_index_quotes(ak, cn_indices, errors))
@@ -140,6 +176,8 @@ class AkshareRealtimeQuoteProvider(RealtimeQuoteProvider):
             output.update(load_a_quotes(ak, a_stocks, errors))
         if hk_stocks:
             output.update(load_hk_quotes(ak, hk_stocks, errors))
+        if fast_errors and any(item.symbol not in output for item in missing):
+            errors.extend(fast_errors)
         return output
 
 
@@ -152,20 +190,197 @@ def realtime_provider_from_config(
     return SyntheticRealtimeQuoteProvider(history_provider)
 
 
+TENCENT_QUOTE_RE = re.compile(r'v_([A-Za-z0-9_]+)="([^"]*)"')
+TENCENT_QUOTE_CHUNK_SIZE = 60
+TENCENT_QUOTE_TIMEOUT_SECONDS = 4
+
+
+def load_tencent_quotes(
+    instruments: List[Instrument],
+    errors: List[str],
+) -> Dict[str, Quote]:
+    code_to_instrument = {
+        code: instrument
+        for instrument in instruments
+        for code in [tencent_quote_code(instrument)]
+        if code
+    }
+    if not code_to_instrument:
+        return {}
+
+    output: Dict[str, Quote] = {}
+    codes = list(code_to_instrument)
+    for start_index in range(0, len(codes), TENCENT_QUOTE_CHUNK_SIZE):
+        chunk = codes[start_index : start_index + TENCENT_QUOTE_CHUNK_SIZE]
+        try:
+            text = fetch_tencent_quote_text(chunk)
+        except Exception as exc:
+            message = str(exc).replace("\n", " ")
+            errors.append(f"腾讯实时快照获取失败：{message[:120]}")
+            continue
+        for match in TENCENT_QUOTE_RE.finditer(text):
+            code = match.group(1)
+            instrument = code_to_instrument.get(code)
+            if instrument is None:
+                continue
+            quote = quote_from_tencent_payload(
+                instrument,
+                code,
+                match.group(2),
+            )
+            if quote is not None:
+                output[instrument.symbol] = quote
+    return output
+
+
+def fetch_tencent_quote_text(codes: List[str]) -> str:
+    query = ",".join(codes)
+    url = "https://qt.gtimg.cn/q=" + urllib.parse.quote(query, safe=",")
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://stockapp.finance.qq.com/",
+        },
+    )
+    with urllib.request.urlopen(
+        request,
+        timeout=TENCENT_QUOTE_TIMEOUT_SECONDS,
+    ) as response:
+        return response.read().decode("gbk", errors="ignore")
+
+
+def tencent_quote_code(instrument: Instrument) -> str:
+    symbol = instrument.provider_symbol or instrument.symbol
+    if is_hk_index(instrument):
+        value = symbol.upper().replace(".HK", "")
+        if value.startswith("HK"):
+            value = value[2:]
+        return f"hk{value}"
+    if is_hk_stock(instrument):
+        return f"hk{normalize_hk_symbol(symbol)}"
+    if is_cn_index(instrument):
+        return cn_index_symbol_for_sina(symbol)
+    return normalize_a_symbol(symbol)
+
+
+def quote_from_tencent_payload(
+    instrument: Instrument,
+    code: str,
+    payload: str,
+) -> Optional[Quote]:
+    fields = payload.split("~")
+    if code.startswith("hk"):
+        quote = quote_from_tencent_hk_fields(instrument, fields)
+    else:
+        quote = quote_from_tencent_cn_fields(instrument, fields)
+    if quote and quote.price > 0:
+        return quote
+    return None
+
+
+def quote_from_tencent_cn_fields(
+    instrument: Instrument,
+    fields: List[str],
+) -> Optional[Quote]:
+    if len(fields) < 35:
+        return None
+    amount = tencent_trade_amount(fields, 35, 37)
+    return Quote(
+        instrument=instrument,
+        price=field_number(fields, 3),
+        change=field_number(fields, 31),
+        change_pct=field_number(fields, 32) / 100,
+        open=field_number(fields, 5),
+        high=field_number(fields, 33),
+        low=field_number(fields, 34),
+        prev_close=field_number(fields, 4),
+        volume=field_number(fields, 36, default=field_number(fields, 6)),
+        amount=amount,
+        timestamp=format_tencent_timestamp(field_text(fields, 30)),
+        source="腾讯实时行情",
+    )
+
+
+def quote_from_tencent_hk_fields(
+    instrument: Instrument,
+    fields: List[str],
+) -> Optional[Quote]:
+    if len(fields) < 35:
+        return None
+    return Quote(
+        instrument=instrument,
+        price=field_number(fields, 3),
+        change=field_number(fields, 31),
+        change_pct=field_number(fields, 32) / 100,
+        open=field_number(fields, 5),
+        high=field_number(fields, 33),
+        low=field_number(fields, 34),
+        prev_close=field_number(fields, 4),
+        volume=field_number(fields, 36, default=field_number(fields, 6)),
+        amount=field_number(fields, 37),
+        timestamp=field_text(fields, 30),
+        source="腾讯实时行情",
+    )
+
+
+def tencent_trade_amount(
+    fields: List[str],
+    combined_index: int,
+    fallback_index: int,
+) -> float:
+    combined = field_text(fields, combined_index)
+    parts = combined.split("/")
+    if len(parts) >= 3:
+        try:
+            return float(parts[2])
+        except ValueError:
+            pass
+    return field_number(fields, fallback_index) * 10000
+
+
+def format_tencent_timestamp(value: str) -> str:
+    if len(value) != 14 or not value.isdigit():
+        return value
+    return (
+        f"{value[0:4]}-{value[4:6]}-{value[6:8]} "
+        f"{value[8:10]}:{value[10:12]}:{value[12:14]}"
+    )
+
+
+def field_text(fields: List[str], index: int) -> str:
+    if index >= len(fields):
+        return ""
+    return fields[index].strip()
+
+
+def field_number(fields: List[str], index: int, default: float = 0.0) -> float:
+    value = field_text(fields, index)
+    if not value or value == "-":
+        return default
+    try:
+        number = float(value)
+        if math.isnan(number):
+            return default
+        return number
+    except ValueError:
+        return default
+
+
 def load_a_quotes(ak, instruments: List[Instrument], errors: List[str]) -> Dict[str, Quote]:
     output: Dict[str, Quote] = {}
     try:
-        frame = call_with_retries(lambda: ak.stock_zh_a_spot_em(), attempts=2)
-        rows = frame.to_dict("records")
-        by_symbol = {str(row.get("代码", "")).zfill(6): row for row in rows}
-        source = "东方财富 A 股实时"
-    except Exception:
         frame = call_with_retries(lambda: ak.stock_zh_a_spot(), attempts=2)
         rows = frame.to_dict("records")
         by_symbol = {
             normalize_a_quote_code(str(row.get("代码", ""))): row for row in rows
         }
         source = "新浪 A 股实时"
+    except Exception:
+        frame = call_with_retries(lambda: ak.stock_zh_a_spot_em(), attempts=1)
+        rows = frame.to_dict("records")
+        by_symbol = {str(row.get("代码", "")).zfill(6): row for row in rows}
+        source = "东方财富 A 股实时"
 
     for instrument in instruments:
         symbol = instrument.provider_symbol or instrument.symbol
@@ -180,19 +395,19 @@ def load_a_quotes(ak, instruments: List[Instrument], errors: List[str]) -> Dict[
 def load_hk_quotes(ak, instruments: List[Instrument], errors: List[str]) -> Dict[str, Quote]:
     output: Dict[str, Quote] = {}
     try:
-        frame = call_with_retries(lambda: ak.stock_hk_spot_em(), attempts=2)
-        rows = frame.to_dict("records")
-        by_symbol = {
-            normalize_hk_symbol(str(row.get("代码", ""))): row for row in rows
-        }
-        source = "东方财富港股实时"
-    except Exception:
         frame = call_with_retries(lambda: ak.stock_hk_spot(), attempts=2)
         rows = frame.to_dict("records")
         by_symbol = {
             normalize_hk_symbol(str(row.get("代码", ""))): row for row in rows
         }
         source = "新浪港股实时"
+    except Exception:
+        frame = call_with_retries(lambda: ak.stock_hk_spot_em(), attempts=1)
+        rows = frame.to_dict("records")
+        by_symbol = {
+            normalize_hk_symbol(str(row.get("代码", ""))): row for row in rows
+        }
+        source = "东方财富港股实时"
 
     for instrument in instruments:
         symbol = normalize_hk_symbol(instrument.provider_symbol or instrument.symbol)
@@ -211,19 +426,19 @@ def load_cn_index_quotes(
 ) -> Dict[str, Quote]:
     output: Dict[str, Quote] = {}
     try:
-        frame = call_with_retries(lambda: ak.stock_zh_index_spot_em(), attempts=2)
-        rows = frame.to_dict("records")
-        by_symbol = {
-            normalize_a_quote_code(str(row.get("代码", ""))): row for row in rows
-        }
-        source = "东方财富内地指数实时"
-    except Exception:
         frame = call_with_retries(lambda: ak.stock_zh_index_spot_sina(), attempts=2)
         rows = frame.to_dict("records")
         by_symbol = {
             normalize_a_quote_code(str(row.get("代码", ""))): row for row in rows
         }
         source = "新浪内地指数实时"
+    except Exception:
+        frame = call_with_retries(lambda: ak.stock_zh_index_spot_em(), attempts=1)
+        rows = frame.to_dict("records")
+        by_symbol = {
+            normalize_a_quote_code(str(row.get("代码", ""))): row for row in rows
+        }
+        source = "东方财富内地指数实时"
 
     for instrument in instruments:
         symbol = instrument.provider_symbol or instrument.symbol
@@ -242,19 +457,19 @@ def load_hk_index_quotes(
 ) -> Dict[str, Quote]:
     output: Dict[str, Quote] = {}
     try:
-        frame = call_with_retries(lambda: ak.stock_hk_index_spot_em(), attempts=2)
-        rows = frame.to_dict("records")
-        by_symbol = {
-            normalize_hk_index_symbol(str(row.get("代码", ""))): row for row in rows
-        }
-        source = "东方财富港股指数实时"
-    except Exception:
         frame = call_with_retries(lambda: ak.stock_hk_index_spot_sina(), attempts=2)
         rows = frame.to_dict("records")
         by_symbol = {
             normalize_hk_index_symbol(str(row.get("代码", ""))): row for row in rows
         }
         source = "新浪港股指数实时"
+    except Exception:
+        frame = call_with_retries(lambda: ak.stock_hk_index_spot_em(), attempts=1)
+        rows = frame.to_dict("records")
+        by_symbol = {
+            normalize_hk_index_symbol(str(row.get("代码", ""))): row for row in rows
+        }
+        source = "东方财富港股指数实时"
 
     for instrument in instruments:
         symbol = instrument.provider_symbol or instrument.symbol
