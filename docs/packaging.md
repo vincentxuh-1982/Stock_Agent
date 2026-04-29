@@ -62,6 +62,16 @@ Stock Agent 的正式本地版采用 macOS App 包形式发布：
 
 如果未来需要做“增量更新”，可以在 update zip 里只放变更文件和一个替换脚本；但当前 App 包体很小，直接整包更新更稳。
 
+实际迭代流程：
+
+1. 修改代码并验证本地 Web/CLI 行为
+2. 提升 `stock_agent/__init__.py` 里的版本号
+3. 提交代码仓库
+4. 运行 `.venv/bin/python scripts/build_release.py --clean`
+5. 使用 `dist/StockAgent-版本号-update.zip` 更新已安装应用
+
+`update.zip` 和完整安装包都会包含同一个最新 App。区别只在使用语义：首次安装发完整安装包，已有用户后续发更新包。
+
 ## 版本号
 
 默认版本号来自：

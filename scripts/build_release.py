@@ -77,9 +77,21 @@ def make_app_bundle(app_bundle: Path, app_code: Path, version: str) -> None:
 
 
 def copy_source_tree(app_code: Path) -> None:
-    shutil.copytree(ROOT / "stock_agent", app_code / "stock_agent")
-    shutil.copytree(ROOT / "config", app_code / "config")
-    shutil.copytree(ROOT / "data", app_code / "data")
+    shutil.copytree(
+        ROOT / "stock_agent",
+        app_code / "stock_agent",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+    )
+    shutil.copytree(
+        ROOT / "config",
+        app_code / "config",
+        ignore=shutil.ignore_patterns(".DS_Store"),
+    )
+    shutil.copytree(
+        ROOT / "data",
+        app_code / "data",
+        ignore=shutil.ignore_patterns("market", "akshare_cache", ".DS_Store"),
+    )
     shutil.copy2(ROOT / "requirements.txt", app_code / "requirements.txt")
     shutil.copy2(ROOT / "README.md", app_code / "README.md")
 
