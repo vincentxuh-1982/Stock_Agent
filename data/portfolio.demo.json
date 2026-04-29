@@ -1,0 +1,21 @@
+{
+  "cash": 100000,
+  "positions": [
+    {
+      "symbol": "DEMO_GROWTH",
+      "name": "演示成长股",
+      "cost": 42.5,
+      "shares": 1200,
+      "target_weight": 0.25,
+      "max_loss_pct": 0.08
+    },
+    {
+      "symbol": "DEMO_VALUE",
+      "name": "演示价值股",
+      "cost": 62.8,
+      "shares": 2000,
+      "target_weight": 0.18,
+      "max_loss_pct": 0.06
+    }
+  ]
+}

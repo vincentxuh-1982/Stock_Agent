@@ -1,0 +1,67 @@
+{
+  "market": "CN",
+  "timezone": "Asia/Shanghai",
+  "data_provider": "akshare",
+  "output_dir": "reports",
+  "lookback_days": 240,
+  "adjust": "qfq",
+  "indices": [
+    {
+      "symbol": "000001",
+      "provider_symbol": "000001",
+      "name": "上证指数",
+      "kind": "cn_index"
+    },
+    {
+      "symbol": "399001",
+      "provider_symbol": "399001",
+      "name": "深证成指",
+      "kind": "cn_index"
+    },
+    {
+      "symbol": "399006",
+      "provider_symbol": "399006",
+      "name": "创业板指",
+      "kind": "cn_index"
+    }
+  ],
+  "watchlist": [
+    {
+      "symbol": "600519",
+      "name": "贵州茅台",
+      "kind": "a_stock",
+      "themes": ["消费"]
+    },
+    {
+      "symbol": "300750",
+      "name": "宁德时代",
+      "kind": "a_stock",
+      "themes": ["新能源"]
+    }
+  ],
+  "news_sources": [
+    {
+      "name": "示例 RSS",
+      "url": "https://example.com/rss.xml"
+    }
+  ],
+  "theme_stock_map": {
+    "AI": [],
+    "算力": [],
+    "半导体": [],
+    "机器人": [],
+    "新能源": ["300750"],
+    "消费": ["600519"],
+    "医药": [],
+    "低空经济": [],
+    "有色金属": [],
+    "银行": [],
+    "券商": []
+  },
+  "schedules": {
+    "after_close_review": "15:30",
+    "midday_news": "12:30",
+    "evening_news": "20:30",
+    "biweekly_insights": "21:00"
+  }
+}

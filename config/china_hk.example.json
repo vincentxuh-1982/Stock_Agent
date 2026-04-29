@@ -1,0 +1,86 @@
+{
+  "market": "CN_HK",
+  "timezone": "Asia/Shanghai",
+  "data_provider": "akshare",
+  "output_dir": "reports",
+  "lookback_days": 240,
+  "adjust": "qfq",
+  "indices": [
+    {
+      "symbol": "000001",
+      "provider_symbol": "000001",
+      "name": "上证指数",
+      "kind": "cn_index"
+    },
+    {
+      "symbol": "399001",
+      "provider_symbol": "399001",
+      "name": "深证成指",
+      "kind": "cn_index"
+    },
+    {
+      "symbol": "399006",
+      "provider_symbol": "399006",
+      "name": "创业板指",
+      "kind": "cn_index"
+    },
+    {
+      "symbol": "HSI",
+      "provider_symbol": "HSI",
+      "name": "恒生指数",
+      "kind": "hk_index"
+    }
+  ],
+  "watchlist": [
+    {
+      "symbol": "300750",
+      "name": "宁德时代",
+      "kind": "a_stock",
+      "themes": ["新能源", "创业板"]
+    },
+    {
+      "symbol": "300308",
+      "name": "中际旭创",
+      "kind": "a_stock",
+      "themes": ["AI", "算力", "创业板"]
+    },
+    {
+      "symbol": "00700",
+      "provider_symbol": "00700",
+      "name": "腾讯控股",
+      "kind": "hk_stock",
+      "market": "HK",
+      "themes": ["互联网", "AI"]
+    },
+    {
+      "symbol": "03690",
+      "provider_symbol": "03690",
+      "name": "美团-W",
+      "kind": "hk_stock",
+      "market": "HK",
+      "themes": ["互联网", "消费"]
+    }
+  ],
+  "news_sources": [],
+  "theme_stock_map": {
+    "AI": ["300308", "00700"],
+    "算力": ["300308"],
+    "半导体": [],
+    "机器人": [],
+    "新能源": ["300750"],
+    "创业板": ["300750", "300308"],
+    "互联网": ["00700", "03690"],
+    "消费": ["03690"],
+    "医药": [],
+    "低空经济": [],
+    "有色金属": [],
+    "银行": [],
+    "券商": []
+  },
+  "schedules": {
+    "after_close_review": "16:30",
+    "midday_news": "12:30",
+    "evening_news": "20:30",
+    "biweekly_insights": "21:00"
+  }
+}

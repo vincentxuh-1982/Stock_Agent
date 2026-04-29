@@ -1,0 +1,41 @@
+{
+  "market": "CN",
+  "timezone": "Asia/Shanghai",
+  "data_provider": "synthetic",
+  "output_dir": "reports",
+  "lookback_days": 180,
+  "indices": [
+    {
+      "symbol": "DEMO_INDEX",
+      "name": "演示指数",
+      "kind": "index"
+    }
+  ],
+  "watchlist": [
+    {
+      "symbol": "DEMO_GROWTH",
+      "name": "演示成长股",
+      "kind": "stock",
+      "themes": ["AI", "算力"]
+    },
+    {
+      "symbol": "DEMO_VALUE",
+      "name": "演示价值股",
+      "kind": "stock",
+      "themes": ["银行", "红利"]
+    }
+  ],
+  "news_sources": [],
+  "theme_stock_map": {
+    "AI": ["DEMO_GROWTH"],
+    "算力": ["DEMO_GROWTH"],
+    "银行": ["DEMO_VALUE"],
+    "红利": ["DEMO_VALUE"]
+  },
+  "schedules": {
+    "after_close_review": "15:30",
+    "midday_news": "12:30",
+    "evening_news": "20:30",
+    "biweekly_insights": "21:00"
+  }
+}
