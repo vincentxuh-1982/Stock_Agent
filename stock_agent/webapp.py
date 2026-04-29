@@ -1625,9 +1625,38 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function displayReport(report) {
+      if (isStalePremarketRealtimeReport(report)) {
+        headingEl.textContent = "实时行情刷新中";
+        subtitleEl.textContent = `${report.name} · 旧报告生成于开盘前`;
+        viewerEl.innerHTML = `
+          <div class="empty">
+            当前已经进入交易时间，上一份实时报告是在 09:30 前生成的盘前状态。
+            系统正在重新拉取行情，完成后会自动替换为交易中分析。
+          </div>
+        `;
+        return;
+      }
       headingEl.textContent = report.title || report.name;
       subtitleEl.textContent = `${report.name} · 历史归档在 reports/history/`;
       viewerEl.innerHTML = report.html || '<div class="empty">暂无内容</div>';
+    }
+
+    function isStalePremarketRealtimeReport(report) {
+      if (!report || report.kind !== "realtime") return false;
+      const markdown = String(report.markdown || "");
+      if (!markdown.includes("交易中标的：0") || !markdown.includes("盘前")) return false;
+      const match = markdown.match(/生成时间：(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
+      if (!match) return false;
+      const now = new Date();
+      const today = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, "0"),
+        String(now.getDate()).padStart(2, "0")
+      ].join("-");
+      const reportDate = `${match[1]}-${match[2]}-${match[3]}`;
+      const reportMinutes = Number(match[4]) * 60 + Number(match[5]);
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      return reportDate === today && reportMinutes < 570 && nowMinutes >= 570 && nowMinutes <= 960;
     }
 
     async function askAssistant() {
