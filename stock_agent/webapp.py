@@ -1690,7 +1690,7 @@ INDEX_HTML = r"""<!doctype html>
         item.classList.toggle("active", item.dataset.kind === state.kind);
       });
       intervalControlEl.classList.toggle("is-hidden", state.kind !== "realtime");
-      document.getElementById("refresh").textContent = state.kind === "realtime" ? "立即刷新" : (state.kind === "positions" ? "刷新持仓" : "重新抓取");
+      document.getElementById("refresh").textContent = state.kind === "realtime" ? "立即刷新" : (state.kind === "positions" ? "刷新建议" : "重新抓取");
     }
 
     function scheduleRealtimeRefresh() {
@@ -1737,22 +1737,25 @@ INDEX_HTML = r"""<!doctype html>
       }
       state.activeJob = "positions";
       if (reason === "manual") setBusy(true);
-      setStatus(reason === "manual" ? "正在刷新持仓" : "正在加载持仓");
+      setStatus(reason === "manual" ? "正在刷新持仓建议" : "正在加载持仓");
       try {
-        if (reason === "manual" || reason === "enter") {
+        let data = await getJson("/api/portfolio");
+        displayPortfolioPage(data);
+        document.getElementById("portfolio-count").textContent = data.summary.position_count;
+        document.getElementById("count-positions").textContent = data.summary.position_count;
+
+        if (reason === "manual") {
           try {
             const reportData = await postJson("/api/run", { job: "portfolio" });
             state.reports = reportData.all_reports || state.reports;
             updateCounts();
+            data = await getJson("/api/portfolio");
+            displayPortfolioPage(data);
           } catch (_) {
-            // 持仓为空或行情暂不可用时，仍然显示本地持仓操作台。
+            // 行情暂不可用时，仍保留已经展示的本地持仓操作台。
           }
         }
-        const data = await getJson("/api/portfolio");
-        displayPortfolioPage(data);
-        document.getElementById("portfolio-count").textContent = data.summary.position_count;
-        document.getElementById("count-positions").textContent = data.summary.position_count;
-        setStatus("准备就绪");
+        setStatus(reason === "manual" ? "持仓建议已刷新" : "准备就绪");
         return data;
       } catch (error) {
         viewerEl.innerHTML = `<div class="empty">${escapeHtml(error.message || "持仓加载失败")}</div>`;
