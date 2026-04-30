@@ -26,7 +26,7 @@ class PushConfig:
     server_chan_send_key: str = ""
     pushplus_token: str = ""
     enabled: bool = False
-    max_chars: int = 3500
+    max_chars: int = 12000
 
     @classmethod
     def from_dict(cls, data: Dict[str, object]) -> "PushConfig":
@@ -37,7 +37,7 @@ class PushConfig:
             server_chan_send_key=str(data.get("server_chan_send_key", "")).strip(),
             pushplus_token=str(data.get("pushplus_token", "")).strip(),
             enabled=bool(data.get("enabled", provider != "disabled")),
-            max_chars=int(data.get("max_chars", 3500) or 3500),
+            max_chars=int(data.get("max_chars", 12000) or 12000),
         )
 
     def with_environment(self) -> "PushConfig":

@@ -3,7 +3,12 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from stock_agent.config import AgentConfig, PushConfig
-from stock_agent.notifier import send_markdown, trim_markdown
+from stock_agent.notifier import (
+    format_mobile_markdown,
+    send_markdown,
+    split_markdown,
+    trim_markdown,
+)
 
 
 class NotifierTests(TestCase):
@@ -37,3 +42,30 @@ class NotifierTests(TestCase):
 
         self.assertLess(len(trimmed), len(content))
         self.assertIn("内容过长已截断", trimmed)
+
+    def test_format_mobile_markdown_removes_local_report_path(self):
+        formatted = format_mobile_markdown(
+            "# 标题\n\n正文\n\n完整报告：`/Users/demo/Library/Application Support/StockAgent/reports/a.md`\n"
+        )
+
+        self.assertIn("正文", formatted)
+        self.assertNotIn("完整报告", formatted)
+        self.assertNotIn("/Users/demo", formatted)
+
+    def test_format_mobile_markdown_turns_tables_into_readable_items(self):
+        formatted = format_mobile_markdown(
+            "| 代码 | 名称 | 现价 | 策略 |\n"
+            "| --- | --- | ---: | --- |\n"
+            "| 603228 | 景旺电子 | 70.61 | 持有观察 |\n"
+        )
+
+        self.assertIn("**603228 景旺电子**", formatted)
+        self.assertIn("现价 70.61；策略 持有观察", formatted)
+        self.assertNotIn("| 603228", formatted)
+
+    def test_split_markdown_preserves_full_content(self):
+        content = "第一段\n" + "第二段\n" * 400
+        chunks = split_markdown(content, 900)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual("".join(chunks).replace("\n", ""), content.replace("\n", ""))

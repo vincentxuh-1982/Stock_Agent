@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -25,16 +26,35 @@ def notify_report(
 ) -> PushResult:
     path = Path(report_path)
     content = summary if summary is not None else path.read_text(encoding="utf-8")
-    content = append_report_path(content, path)
-    return send_markdown(config.push, title, content)
+    return send_markdown(config.push, title, format_mobile_markdown(content))
 
 
 def send_markdown(push_config: PushConfig, title: str, content: str) -> PushResult:
     if not push_config.enabled or push_config.provider == "disabled":
         return PushResult(False, push_config.provider, "push disabled")
 
-    body = trim_markdown(content, push_config.max_chars)
     provider = push_config.provider.lower()
+    chunks = split_markdown(content, push_config.max_chars)
+    sent_messages = []
+    for index, body in enumerate(chunks, start=1):
+        chunk_title = title if len(chunks) == 1 else f"{title}（{index}/{len(chunks)}）"
+        result = send_markdown_chunk(push_config, provider, chunk_title, body)
+        if not result.sent:
+            return PushResult(
+                False,
+                provider,
+                f"part {index}/{len(chunks)} failed: {result.message}",
+            )
+        sent_messages.append(result.message)
+    return PushResult(True, provider, f"sent {len(chunks)} message(s); {sent_messages[-1]}")
+
+
+def send_markdown_chunk(
+    push_config: PushConfig,
+    provider: str,
+    title: str,
+    body: str,
+) -> PushResult:
     if provider in {"wecom", "wechat", "wechat_work", "enterprise_wechat"}:
         if not push_config.wechat_webhook_url:
             return PushResult(False, provider, "missing wechat_webhook_url")
@@ -113,12 +133,106 @@ def trim_markdown(content: str, max_chars: int) -> str:
     max_chars = max(800, max_chars)
     if len(content) <= max_chars:
         return content
-    return content[: max_chars - 80].rstrip() + "\n\n...内容过长已截断，请打开本地完整报告查看。"
+    return content[: max_chars - 80].rstrip() + "\n\n...内容过长已截断，本地应用保留完整历史。"
 
 
-def append_report_path(content: str, path: Path) -> str:
-    absolute = path.resolve()
-    suffix = f"\n\n完整报告：`{absolute}`"
-    if str(absolute) in content:
-        return content
-    return content.rstrip() + suffix
+def split_markdown(content: str, max_chars: int) -> list[str]:
+    max_chars = max(800, max_chars)
+    if len(content) <= max_chars:
+        return [content]
+    chunks: list[str] = []
+    current = ""
+    for line in content.splitlines(keepends=True):
+        if len(line) > max_chars:
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+            for start in range(0, len(line), max_chars):
+                chunks.append(line[start : start + max_chars].rstrip())
+            continue
+        if current and len(current) + len(line) > max_chars:
+            chunks.append(current.rstrip())
+            current = ""
+        current += line
+    if current:
+        chunks.append(current.rstrip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def format_mobile_markdown(content: str) -> str:
+    lines = content.splitlines()
+    output = []
+    index = 0
+    while index < len(lines):
+        line = strip_markdown_links(lines[index]).rstrip()
+        if is_table_header(lines, index):
+            headers = split_table_row(line)
+            rows = []
+            index += 2
+            while index < len(lines) and lines[index].lstrip().startswith("|"):
+                rows.append(split_table_row(strip_markdown_links(lines[index])))
+                index += 1
+            output.extend(format_table_for_mobile(headers, rows))
+            continue
+        if looks_like_local_report_path(line):
+            index += 1
+            continue
+        output.append(line)
+        index += 1
+    return "\n".join(output).strip() + "\n"
+
+
+def is_table_header(lines: list[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    return lines[index].lstrip().startswith("|") and is_table_separator(lines[index + 1])
+
+
+def is_table_separator(line: str) -> bool:
+    cells = split_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
+
+
+def split_table_row(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def format_table_for_mobile(headers: list[str], rows: list[list[str]]) -> list[str]:
+    output: list[str] = []
+    for row in rows:
+        cells = normalize_row(headers, row)
+        values = dict(zip(headers, cells))
+        code = values.get("代码", "")
+        name = values.get("名称", "")
+        title = " ".join(part for part in [code, name] if part)
+        details = [
+            f"{header} {value}"
+            for header, value in zip(headers, cells)
+            if value and header not in {"代码", "名称"}
+        ]
+        if title:
+            output.append(f"- **{title}**")
+            if details:
+                output.append(f"  {'；'.join(details)}")
+        elif details:
+            output.append(f"- {'；'.join(details)}")
+    return output
+
+
+def normalize_row(headers: list[str], row: list[str]) -> list[str]:
+    if len(row) >= len(headers):
+        return row[: len(headers)]
+    return row + [""] * (len(headers) - len(row))
+
+
+def strip_markdown_links(line: str) -> str:
+    return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+
+
+def looks_like_local_report_path(line: str) -> bool:
+    return bool(re.search(r"(完整报告|报告路径).*/(reports|StockAgent)/", line))

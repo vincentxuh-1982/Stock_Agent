@@ -90,6 +90,6 @@
     "wechat_webhook_url": "",
     "server_chan_send_key": "",
     "pushplus_token": "",
-    "max_chars": 3500
+    "max_chars": 12000
   }
 }
