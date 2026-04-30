@@ -14,6 +14,9 @@
 - 盘中读取自选股实时快照，叠加技术位输出实时关注优先级和当天剩余走势概率
 - 针对自选股给出观察、试仓、等待回调等建仓建议
 - 针对持仓股结合成本、现价、趋势、ATR 给出持有、减仓、止损、加仓观察建议
+- 生成每日复盘与持仓简报，汇总指数、自选股/持仓股新闻、行业热点、持仓/建仓策略
+- 交易时段每 30 分钟生成盘中实时策略简报：持仓股给操作策略，自选股只推建仓机会
+- 支持微信推送通道：企业微信群机器人、Server 酱、PushPlus
 - 支持 `synthetic` 演示数据、CSV 本地数据、AKShare A 股数据三种 provider
 - 支持 A 股/创业板/港股混合股票池，标的类型包括 `a_stock`、`cn_index`、`hk_stock`、`hk_index`
 - 支持常驻调度进程，在指定时间自动生成报告
@@ -26,6 +29,8 @@ python3 -m stock_agent.cli realtime --config config/demo.json
 python3 -m stock_agent.cli news --config config/demo.json
 python3 -m stock_agent.cli insights --config config/demo.json
 python3 -m stock_agent.cli advise --config config/demo.json --portfolio data/portfolio.demo.json
+python3 -m stock_agent.cli daily-digest --config config/demo.json --portfolio data/portfolio.demo.json
+python3 -m stock_agent.cli realtime-push --config config/demo.json --portfolio data/portfolio.demo.json
 ```
 
 报告默认输出到 `reports/`。
@@ -90,6 +95,42 @@ export OPENAI_MODEL="gpt-4o-mini"
 ```
 
 其中包含 `config/local.json`、`data/portfolio.local.json` 和 `reports/`。因此后续更新只替换 App，不会覆盖自选股、持仓、交易流水和历史报告。详细说明见 `docs/packaging.md`。
+
+安装或更新包会注册两个本地后台服务：
+
+- `local.stock-agent.web`：常驻本地 Web 服务，登录后自动运行
+- `local.stock-agent.scheduler`：定时生成报告和推送
+
+也可以手动安装/刷新后台服务：
+
+```bash
+python3 scripts/install_launch_agents.py --app "$HOME/Applications/Stock Agent.app"
+```
+
+## 微信推送
+
+在 `~/Library/Application Support/StockAgent/config/local.json` 或开发态 `config/local.json` 中配置 `push`：
+
+```json
+{
+  "push": {
+    "enabled": true,
+    "provider": "wecom",
+    "wechat_webhook_url": "企业微信群机器人 Webhook URL",
+    "server_chan_send_key": "",
+    "pushplus_token": "",
+    "max_chars": 3500
+  }
+}
+```
+
+可选 provider：
+
+- `wecom`：企业微信群机器人 Webhook
+- `serverchan`：Server 酱 SendKey
+- `pushplus`：PushPlus token
+
+也可以用环境变量覆盖：`STOCK_AGENT_PUSH_PROVIDER`、`STOCK_AGENT_WECHAT_WEBHOOK_URL`、`STOCK_AGENT_SERVERCHAN_SEND_KEY`、`STOCK_AGENT_PUSHPLUS_TOKEN`。
 
 ## 接入真实 A 股数据
 

@@ -92,6 +92,11 @@ def copy_source_tree(app_code: Path) -> None:
         app_code / "data",
         ignore=shutil.ignore_patterns("market", "akshare_cache", ".DS_Store"),
     )
+    shutil.copytree(
+        ROOT / "scripts",
+        app_code / "scripts",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+    )
     shutil.copy2(ROOT / "requirements.txt", app_code / "requirements.txt")
     shutil.copy2(ROOT / "README.md", app_code / "README.md")
 
@@ -261,6 +266,9 @@ def install_or_update_script() -> str:
         /usr/bin/ditto "$SOURCE_APP" "$TARGET_APP"
         /bin/echo "已安装/更新到：$TARGET_APP"
         /bin/echo "配置、持仓和报告保存在：$HOME/Library/Application Support/{SUPPORT_DIR_NAME}"
+        /usr/bin/python3 "$TARGET_APP/Contents/Resources/app/scripts/install_launch_agents.py" \\
+          --app "$TARGET_APP" \\
+          --no-open
         /usr/bin/open "$TARGET_APP"
         """
     )
@@ -293,6 +301,13 @@ def install_readme(version: str) -> str:
         - `data/portfolio.local.json`：持仓和交易记录
         - `reports/`：实时、复盘、新闻、洞察和持仓建议报告
 
+        ## 本地后台服务
+
+        安装脚本会注册两个用户级后台服务：
+
+        - `local.stock-agent.web`：本地 Web 服务，登录后自动运行
+        - `local.stock-agent.scheduler`：定时报告和微信推送，登录后自动运行
+
         ## 首次启动
 
         首次启动会在用户数据目录创建 Python 运行环境，并安装 `requirements.txt` 里的依赖。
@@ -301,6 +316,12 @@ def install_readme(version: str) -> str:
         ## 后续更新包
 
         后续版本继续双击新包里的 `安装或更新.command` 即可。由于用户数据不放在 App 内，更新只替换程序文件。
+        安装脚本会同步刷新本地后台服务：Web 服务和调度推送服务都会在登录后自动运行。
+
+        ## 微信推送
+
+        在用户数据目录的 `config/local.json` 里配置 `push` 后，调度器会自动把每日复盘、盘中实时简报和两周洞察推送到微信。
+        支持 `wecom`（企业微信群机器人）、`serverchan`（Server 酱）和 `pushplus`。
 
         ## 日志
 

@@ -59,9 +59,18 @@
     "券商": []
   },
   "schedules": {
-    "after_close_review": "15:30",
+    "after_close_review": "15:10",
     "midday_news": "12:30",
     "evening_news": "20:30",
-    "biweekly_insights": "21:00"
+    "biweekly_insights": "21:00",
+    "realtime_push_interval_minutes": "30"
+  },
+  "push": {
+    "enabled": false,
+    "provider": "disabled",
+    "wechat_webhook_url": "",
+    "server_chan_send_key": "",
+    "pushplus_token": "",
+    "max_chars": 3500
   }
 }

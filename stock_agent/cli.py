@@ -4,7 +4,15 @@ import argparse
 
 from .config import load_config, load_mapping
 from .models import Portfolio
-from .pipeline import run_insights, run_news, run_portfolio, run_realtime, run_review
+from .pipeline import (
+    run_daily_digest,
+    run_insights,
+    run_news,
+    run_portfolio,
+    run_realtime,
+    run_realtime_push,
+    run_review,
+)
 from .scheduler import run_scheduler
 from .webapp import serve
 
@@ -13,12 +21,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Stock analysis agent")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for command in ("review", "news", "realtime", "insights", "run-all", "schedule"):
+    for command in (
+        "review",
+        "news",
+        "realtime",
+        "realtime-push",
+        "daily-digest",
+        "insights",
+        "run-all",
+        "schedule",
+    ):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--config", default="config/demo.json")
         if command == "insights":
             subparser.add_argument("--force", action="store_true")
-        if command in {"run-all", "schedule"}:
+        if command in {"run-all", "schedule", "daily-digest", "realtime-push"}:
             subparser.add_argument("--portfolio", default=None)
         if command == "schedule":
             subparser.add_argument("--poll-seconds", type=int, default=60)
@@ -51,6 +68,18 @@ def main() -> None:
         print(f"realtime report: {path}")
         return
 
+    if args.command == "realtime-push":
+        portfolio = load_portfolio(args.portfolio) if args.portfolio else None
+        path = run_realtime_push(config, portfolio)
+        print(f"realtime push digest: {path}")
+        return
+
+    if args.command == "daily-digest":
+        portfolio = load_portfolio(args.portfolio) if args.portfolio else None
+        path = run_daily_digest(config, portfolio)
+        print(f"daily digest: {path}")
+        return
+
     if args.command == "insights":
         path = run_insights(config, force=args.force)
         print(f"biweekly insights: {path}")
@@ -79,7 +108,13 @@ def main() -> None:
 
     if args.command == "schedule":
         portfolio = load_portfolio(args.portfolio) if args.portfolio else None
-        run_scheduler(config, portfolio=portfolio, poll_seconds=args.poll_seconds)
+        run_scheduler(
+            config,
+            portfolio=portfolio,
+            poll_seconds=args.poll_seconds,
+            config_path=args.config,
+            portfolio_path=args.portfolio,
+        )
         return
 
     if args.command == "web":

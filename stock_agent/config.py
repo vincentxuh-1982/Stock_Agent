@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -19,6 +20,58 @@ class NewsSource:
 
 
 @dataclass
+class PushConfig:
+    provider: str = "disabled"
+    wechat_webhook_url: str = ""
+    server_chan_send_key: str = ""
+    pushplus_token: str = ""
+    enabled: bool = False
+    max_chars: int = 3500
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, object]) -> "PushConfig":
+        provider = str(data.get("provider", "disabled")).strip().lower() or "disabled"
+        return cls(
+            provider=provider,
+            wechat_webhook_url=str(data.get("wechat_webhook_url", "")).strip(),
+            server_chan_send_key=str(data.get("server_chan_send_key", "")).strip(),
+            pushplus_token=str(data.get("pushplus_token", "")).strip(),
+            enabled=bool(data.get("enabled", provider != "disabled")),
+            max_chars=int(data.get("max_chars", 3500) or 3500),
+        )
+
+    def with_environment(self) -> "PushConfig":
+        provider = os.environ.get("STOCK_AGENT_PUSH_PROVIDER", self.provider).strip().lower()
+        wechat_webhook_url = os.environ.get(
+            "STOCK_AGENT_WECHAT_WEBHOOK_URL",
+            self.wechat_webhook_url,
+        ).strip()
+        server_chan_send_key = os.environ.get(
+            "STOCK_AGENT_SERVERCHAN_SEND_KEY",
+            self.server_chan_send_key,
+        ).strip()
+        pushplus_token = os.environ.get(
+            "STOCK_AGENT_PUSHPLUS_TOKEN",
+            self.pushplus_token,
+        ).strip()
+        enabled_value = os.environ.get("STOCK_AGENT_PUSH_ENABLED", "")
+        if enabled_value:
+            enabled = enabled_value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            enabled = self.enabled or bool(
+                wechat_webhook_url or server_chan_send_key or pushplus_token
+            )
+        return PushConfig(
+            provider=provider or "disabled",
+            wechat_webhook_url=wechat_webhook_url,
+            server_chan_send_key=server_chan_send_key,
+            pushplus_token=pushplus_token,
+            enabled=enabled,
+            max_chars=self.max_chars,
+        )
+
+
+@dataclass
 class AgentConfig:
     market: str = "CN"
     timezone: str = "Asia/Shanghai"
@@ -32,6 +85,7 @@ class AgentConfig:
     news_sources: List[NewsSource] = field(default_factory=list)
     theme_stock_map: Dict[str, List[str]] = field(default_factory=dict)
     schedules: Dict[str, str] = field(default_factory=dict)
+    push: PushConfig = field(default_factory=PushConfig)
 
     @classmethod
     def from_dict(cls, data: Dict[str, object]) -> "AgentConfig":
@@ -55,6 +109,7 @@ class AgentConfig:
             schedules={
                 str(k): str(v) for k, v in dict(data.get("schedules", {})).items()
             },
+            push=PushConfig.from_dict(dict(data.get("push", {}))).with_environment(),
         )
 
 

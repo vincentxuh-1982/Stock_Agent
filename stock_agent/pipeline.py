@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .analyzer import analyze_many
 from .config import AgentConfig
 from .data_providers import provider_from_config
+from .digest import run_daily_digest as run_daily_digest_report
+from .digest import run_realtime_push_digest
 from .insights import run_insights as run_biweekly_insights
 from .models import AnalysisResult, Portfolio
 from .news import fetch_hot_candidates, fetch_news, find_hotspots
@@ -36,6 +38,14 @@ def run_news(config: AgentConfig) -> str:
 
 def run_insights(config: AgentConfig, force: bool = False) -> str:
     return run_biweekly_insights(config, force=force)
+
+
+def run_daily_digest(config: AgentConfig, portfolio: Optional[Portfolio] = None) -> str:
+    return run_daily_digest_report(config, portfolio)
+
+
+def run_realtime_push(config: AgentConfig, portfolio: Optional[Portfolio] = None) -> str:
+    return run_realtime_push_digest(config, portfolio)
 
 
 def run_realtime(config: AgentConfig) -> str:

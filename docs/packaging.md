@@ -51,6 +51,19 @@ Stock Agent 的正式本地版采用 macOS App 包形式发布：
 5. 启动本地服务 `127.0.0.1:8765`
 6. 打开默认浏览器访问 `http://127.0.0.1:8765/#realtime`
 
+安装或更新包里的 `安装或更新.command` 还会调用：
+
+```bash
+python3 scripts/install_launch_agents.py --app "$HOME/Applications/Stock Agent.app"
+```
+
+这会注册两个用户级后台服务：
+
+- `local.stock-agent.web`：登录后自动启动本地 Web 服务
+- `local.stock-agent.scheduler`：登录后自动启动定时任务，负责复盘、实时简报、两周洞察和推送
+
+因此正常安装后不需要再由 Codex 或终端手动开服务。
+
 ## 更新包规则
 
 后续版本继续用同一个脚本生成更新包。更新包可以直接覆盖 App，因为以下文件不会放在 App 内：
@@ -71,6 +84,31 @@ Stock Agent 的正式本地版采用 macOS App 包形式发布：
 5. 使用 `dist/StockAgent-版本号-update.zip` 更新已安装应用
 
 `update.zip` 和完整安装包都会包含同一个最新 App。区别只在使用语义：首次安装发完整安装包，已有用户后续发更新包。
+
+## 微信推送配置
+
+推送配置在用户数据目录的 `config/local.json` 中，不随 App 更新覆盖。支持：
+
+- `wecom`：企业微信群机器人 Webhook
+- `serverchan`：Server 酱 SendKey
+- `pushplus`：PushPlus token
+
+示例：
+
+```json
+{
+  "push": {
+    "enabled": true,
+    "provider": "wecom",
+    "wechat_webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...",
+    "server_chan_send_key": "",
+    "pushplus_token": "",
+    "max_chars": 3500
+  }
+}
+```
+
+如果没有配置推送凭据，调度器仍会按时生成本地报告，但不会向微信发送。
 
 ## 版本号
 
