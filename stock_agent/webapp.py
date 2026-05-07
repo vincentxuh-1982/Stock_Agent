@@ -633,15 +633,116 @@ def render_table(lines: List[str]) -> str:
         return ""
     header = rows[0]
     body = rows[2:]
-    parts = ["<div class=\"table-wrap\"><table><thead><tr>"]
-    parts.extend(f"<th>{inline_markdown(cell)}</th>" for cell in header)
+    parts = ['<div class="table-wrap"><table class="data-table"><thead><tr>']
+    for index, cell in enumerate(header):
+        classes = table_header_class(index, cell)
+        parts.append(f'<th class="{classes}">{inline_markdown(cell)}</th>')
     parts.append("</tr></thead><tbody>")
     for row in body:
         parts.append("<tr>")
-        parts.extend(f"<td>{inline_markdown(cell)}</td>" for cell in row)
+        for index, cell in enumerate(row):
+            header_cell = header[index] if index < len(header) else ""
+            classes = table_cell_class(index, header_cell, cell)
+            parts.append(f'<td class="{classes}">{table_cell_html(header_cell, cell)}</td>')
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
     return "".join(parts)
+
+
+def table_header_class(index: int, header: str) -> str:
+    classes = [f"col-{index + 1}", column_key(header)]
+    if index < 2:
+        classes.append("is-sticky-key")
+    return " ".join(classes)
+
+
+def table_cell_class(index: int, header: str, text: str) -> str:
+    classes = [f"col-{index + 1}", column_key(header)]
+    if index < 2:
+        classes.append("is-sticky-key")
+    if is_change_column(header):
+        classes.append(change_class(text))
+    if is_long_text_column(header) or len(text) > 48:
+        classes.append("is-long-text")
+    if "概率" in header:
+        classes.append("is-probability")
+    return " ".join(item for item in classes if item)
+
+
+def column_key(header: str) -> str:
+    normalized = re.sub(r"\W+", "-", header.strip().lower()).strip("-")
+    return f"column-{normalized or 'value'}"
+
+
+def table_cell_html(header: str, text: str) -> str:
+    if "概率" in header:
+        return render_probability_cell(text)
+    if is_status_column(header) and text:
+        return f'<span class="status-chip">{inline_markdown(text)}</span>'
+    if is_long_text_column(header) and len(text) > 30:
+        summary = truncate_text(text, 34)
+        return (
+            '<details class="cell-detail">'
+            f"<summary>{inline_markdown(summary)}</summary>"
+            f"<div>{inline_markdown(text)}</div>"
+            "</details>"
+        )
+    return inline_markdown(text)
+
+
+def render_probability_cell(text: str) -> str:
+    up, down = probability_values(text)
+    label = inline_markdown(text)
+    if up is None or down is None:
+        return label
+    up_width = safe_percent(up)
+    down_width = safe_percent(down)
+    dominant = "up" if up >= down else "down"
+    return (
+        f'<div class="prob-cell is-{dominant}">'
+        f'<div class="prob-label">{label}</div>'
+        '<div class="prob-track" aria-hidden="true">'
+        f'<span class="prob-up" style="width:{up_width}%"></span>'
+        f'<span class="prob-down" style="width:{down_width}%"></span>'
+        "</div>"
+        "</div>"
+    )
+
+
+def probability_values(text: str) -> tuple[Optional[int], Optional[int]]:
+    match = re.search(r"涨\s*(\d{1,3})%\s*/\s*跌\s*(\d{1,3})%", text)
+    if not match:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
+
+
+def safe_percent(value: int) -> int:
+    return min(100, max(0, value))
+
+
+def is_change_column(header: str) -> bool:
+    return any(keyword in header for keyword in ("涨跌", "盈亏", "浮盈", "已实现"))
+
+
+def is_status_column(header: str) -> bool:
+    return header in {"状态", "趋势/状态", "短期", "方向"}
+
+
+def is_long_text_column(header: str) -> bool:
+    return any(keyword in header for keyword in ("条件", "动作", "策略", "建议", "观察"))
+
+
+def change_class(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("-"):
+        return "is-negative"
+    if stripped.startswith("+") or re.match(r"^\d", stripped):
+        return "is-positive"
+    return ""
+
+
+def truncate_text(text: str, max_length: int) -> str:
+    return text if len(text) <= max_length else text[: max_length - 1].rstrip() + "…"
 
 
 def split_table_row(line: str) -> List[str]:
@@ -738,8 +839,21 @@ INDEX_HTML = r"""<!doctype html>
 
     .nav {
       display: grid;
-      gap: 7px;
+      gap: 12px;
       margin: 12px 0 18px;
+    }
+
+    .nav-group {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav-group-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 720;
+      letter-spacing: 0;
+      padding: 0 8px;
     }
 
     .nav button,
@@ -759,6 +873,14 @@ INDEX_HTML = r"""<!doctype html>
       display: flex;
       align-items: center;
       justify-content: space-between;
+    }
+
+    .nav button[data-kind="realtime"],
+    .nav button[data-kind="review"] {
+      min-height: 46px;
+      font-size: 15px;
+      border-color: #d6e4da;
+      background: #f7faf8;
     }
 
     .nav button.active,
@@ -821,6 +943,14 @@ INDEX_HTML = r"""<!doctype html>
       flex-wrap: wrap;
     }
 
+    .refresh-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
     .interval-control {
       display: flex;
       align-items: center;
@@ -836,7 +966,32 @@ INDEX_HTML = r"""<!doctype html>
       text-align: right;
     }
 
-    .interval-control.is-hidden {
+    .refresh-countdown {
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 92px;
+      text-align: left;
+    }
+
+    .pause-btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 7px;
+      min-height: 30px;
+      padding: 5px 9px;
+      cursor: pointer;
+      font-weight: 680;
+    }
+
+    .pause-btn.is-paused {
+      border-color: #e0c68d;
+      background: #fff9ec;
+      color: #7b4f0c;
+    }
+
+    .interval-control.is-hidden,
+    .refresh-controls.is-hidden {
       display: none;
     }
 
@@ -885,6 +1040,7 @@ INDEX_HTML = r"""<!doctype html>
       align-self: start;
       min-height: 280px;
       max-height: 420px;
+      border-color: #c8d7cd;
     }
 
     .assistant-panel {
@@ -961,6 +1117,12 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--panel-soft);
     }
 
+    button:disabled {
+      color: var(--muted);
+      cursor: not-allowed;
+      background: var(--panel-soft);
+    }
+
     .panel-head {
       padding: 12px;
       border-bottom: 1px solid var(--line);
@@ -1015,6 +1177,19 @@ INDEX_HTML = r"""<!doctype html>
     .trade-form {
       display: grid;
       gap: 8px;
+    }
+
+    .lookup-form {
+      grid-template-columns: minmax(0, 1fr) 86px;
+    }
+
+    .lookup-form input {
+      min-height: 42px;
+    }
+
+    .theme-form {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
     }
 
     input,
@@ -1152,6 +1327,11 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
     }
 
+    .search-row:hover {
+      border-color: #c0d3c7;
+      background: #fbfdfb;
+    }
+
     .result-actions {
       display: grid;
       grid-template-columns: 1fr;
@@ -1237,6 +1417,10 @@ INDEX_HTML = r"""<!doctype html>
       background: #fff;
     }
 
+    .data-table tbody tr:hover td {
+      background: #fbfdfb;
+    }
+
     th,
     td {
       border-bottom: 1px solid var(--line);
@@ -1245,6 +1429,81 @@ INDEX_HTML = r"""<!doctype html>
       vertical-align: top;
       white-space: nowrap;
       background: #fff;
+    }
+
+    td.is-positive {
+      color: var(--green);
+      font-weight: 680;
+    }
+
+    td.is-negative {
+      color: var(--red);
+      font-weight: 680;
+    }
+
+    td.is-long-text {
+      white-space: normal;
+      min-width: 280px;
+      max-width: 460px;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid #d8e4dc;
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: #f5f9f6;
+      color: #305542;
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .prob-cell {
+      display: grid;
+      gap: 5px;
+      min-width: 170px;
+    }
+
+    .prob-label {
+      white-space: normal;
+      line-height: 1.35;
+      color: var(--text);
+    }
+
+    .prob-track {
+      height: 6px;
+      border-radius: 999px;
+      background: #f1f3f1;
+      overflow: hidden;
+      display: flex;
+      box-shadow: inset 0 0 0 1px rgba(24, 33, 29, 0.06);
+    }
+
+    .prob-up {
+      background: rgba(19, 138, 87, 0.8);
+    }
+
+    .prob-down {
+      background: rgba(188, 61, 58, 0.8);
+    }
+
+    .cell-detail {
+      white-space: normal;
+    }
+
+    .cell-detail summary {
+      cursor: pointer;
+      color: #245f87;
+      font-weight: 680;
+      list-style-position: outside;
+    }
+
+    .cell-detail div {
+      margin-top: 6px;
+      color: #26302a;
+      line-height: 1.55;
     }
 
     th {
@@ -1306,6 +1565,12 @@ INDEX_HTML = r"""<!doctype html>
       pointer-events: none;
     }
 
+    .loading #refresh,
+    .loading .lookup-form button,
+    .loading .assistant-form button {
+      cursor: progress;
+    }
+
     @media (max-width: 1060px) {
       .shell {
         grid-template-columns: 1fr;
@@ -1319,7 +1584,11 @@ INDEX_HTML = r"""<!doctype html>
       }
 
       .nav {
-        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .nav-group-label {
+        display: none;
       }
 
       .workspace {
@@ -1349,6 +1618,14 @@ INDEX_HTML = r"""<!doctype html>
       .nav {
         grid-template-columns: 1fr;
       }
+
+      .lookup-form {
+        grid-template-columns: 1fr;
+      }
+
+      td.is-long-text {
+        min-width: 220px;
+      }
     }
   </style>
 </head>
@@ -1360,12 +1637,21 @@ INDEX_HTML = r"""<!doctype html>
         <span class="badge">local</span>
       </div>
       <nav class="nav" id="nav">
-        <button data-kind="realtime" class="active">实时 <span id="count-realtime">0</span></button>
-        <button data-kind="review">复盘 <span id="count-review">0</span></button>
-        <button data-kind="news">新闻 <span id="count-news">0</span></button>
-        <button data-kind="insights">洞察 <span id="count-insights">0</span></button>
-        <button data-kind="positions">持仓 <span id="count-positions">0</span></button>
-        <button data-kind="portfolio">建议 <span id="count-portfolio">0</span></button>
+        <div class="nav-group">
+          <div class="nav-group-label">核心</div>
+          <button data-kind="realtime" class="active">实时 <span id="count-realtime">0</span></button>
+          <button data-kind="review">复盘 <span id="count-review">0</span></button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-label">研究</div>
+          <button data-kind="news">新闻 <span id="count-news">0</span></button>
+          <button data-kind="insights">洞察 <span id="count-insights">0</span></button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-label">持仓</div>
+          <button data-kind="positions">操作 <span id="count-positions">0</span></button>
+          <button data-kind="portfolio">建议 <span id="count-portfolio">0</span></button>
+        </div>
       </nav>
       <div class="meta">
         <div><span>自选</span><strong id="watch-count">-</strong></div>
@@ -1377,11 +1663,15 @@ INDEX_HTML = r"""<!doctype html>
       <header class="topbar">
         <h2 id="section-title">实时盯盘</h2>
         <div class="topbar-actions">
-          <label class="interval-control" id="interval-control">
-            <span>刷新间隔</span>
-            <input id="refresh-interval" type="number" min="5" step="5" value="30" />
-            <span>秒</span>
-          </label>
+          <div class="refresh-controls" id="interval-control">
+            <label class="interval-control">
+              <span>自动刷新</span>
+              <input id="refresh-interval" type="number" min="5" max="60" step="5" value="30" placeholder="5-60" aria-label="实时刷新间隔秒数" />
+              <span>秒</span>
+            </label>
+            <span class="refresh-countdown" id="refresh-countdown">下次 --</span>
+            <button class="pause-btn" id="toggle-auto-refresh" type="button">暂停</button>
+          </div>
           <div class="status" id="status">准备就绪</div>
         </div>
       </header>
@@ -1392,7 +1682,7 @@ INDEX_HTML = r"""<!doctype html>
               <strong id="viewer-heading">未选择报告</strong>
               <span id="viewer-subtitle">当前模块报告；历史归档在 reports/history/</span>
             </div>
-            <button class="small-btn primary-btn" id="refresh">立即刷新</button>
+            <button class="small-btn primary-btn" id="refresh" type="button">立即刷新</button>
           </div>
           <div class="report-html" id="viewer"><div class="empty">暂无内容</div></div>
         </article>
@@ -1450,6 +1740,9 @@ INDEX_HTML = r"""<!doctype html>
       runningJobs: 0,
       refreshIntervalSec: 30,
       realtimeTimer: null,
+      countdownTimer: null,
+      nextRefreshAt: 0,
+      autoRefreshPaused: false,
       refreshToken: 0,
       assistantStarted: false
     };
@@ -1471,13 +1764,17 @@ INDEX_HTML = r"""<!doctype html>
     const searchInput = document.getElementById("search-input");
     const themeInput = document.getElementById("theme-input");
     const searchResultsEl = document.getElementById("search-results");
+    const refreshButtonEl = document.getElementById("refresh");
     const refreshIntervalEl = document.getElementById("refresh-interval");
     const intervalControlEl = document.getElementById("interval-control");
+    const refreshCountdownEl = document.getElementById("refresh-countdown");
+    const autoRefreshToggleEl = document.getElementById("toggle-auto-refresh");
     const assistantForm = document.getElementById("assistant-form");
     const assistantInput = document.getElementById("assistant-input");
     const assistantSubmit = document.getElementById("assistant-submit");
     const assistantThreadEl = document.getElementById("assistant-thread");
     const assistantModeEl = document.getElementById("assistant-mode");
+    const searchButtonEl = searchForm.querySelector("button");
 
     document.querySelectorAll("[data-kind]").forEach(button => {
       button.addEventListener("click", async () => {
@@ -1498,11 +1795,22 @@ INDEX_HTML = r"""<!doctype html>
       });
     });
 
-    document.getElementById("refresh").addEventListener("click", () => refreshCurrentPage("manual"));
+    refreshButtonEl.addEventListener("click", () => refreshCurrentPage("manual"));
     refreshIntervalEl.addEventListener("change", () => {
       state.refreshIntervalSec = normalizeRefreshInterval();
       refreshIntervalEl.value = state.refreshIntervalSec;
       if (state.kind === "realtime") {
+        scheduleRealtimeRefresh();
+      }
+    });
+    autoRefreshToggleEl.addEventListener("click", () => {
+      state.autoRefreshPaused = !state.autoRefreshPaused;
+      updateAutoRefreshButton();
+      if (state.autoRefreshPaused) {
+        clearRealtimeRefresh("已暂停");
+        setStatus("自动刷新已暂停");
+      } else {
+        setStatus("自动刷新已恢复");
         scheduleRealtimeRefresh();
       }
     });
@@ -1719,32 +2027,76 @@ INDEX_HTML = r"""<!doctype html>
         item.classList.toggle("active", item.dataset.kind === state.kind);
       });
       intervalControlEl.classList.toggle("is-hidden", state.kind !== "realtime");
-      document.getElementById("refresh").textContent = state.kind === "realtime" ? "立即刷新" : (state.kind === "positions" ? "刷新建议" : "重新抓取");
+      refreshButtonEl.textContent = state.kind === "realtime" ? "立即刷新" : (state.kind === "positions" ? "刷新建议" : "重新抓取");
+      updateAutoRefreshButton();
+      updateCountdown();
     }
 
     function scheduleRealtimeRefresh() {
       clearRealtimeRefresh();
       state.refreshIntervalSec = normalizeRefreshInterval();
       refreshIntervalEl.value = state.refreshIntervalSec;
-      if (state.kind !== "realtime") return;
-      state.realtimeTimer = window.setInterval(() => {
-        if (state.kind === "realtime") {
-          runJob("realtime", { reason: "timer" });
+      if (state.kind !== "realtime" || state.autoRefreshPaused) {
+        updateCountdown(state.autoRefreshPaused ? "已暂停" : "下次 --");
+        return;
+      }
+      state.nextRefreshAt = Date.now() + state.refreshIntervalSec * 1000;
+      updateCountdown();
+      state.countdownTimer = window.setInterval(() => updateCountdown(), 1000);
+      state.realtimeTimer = window.setTimeout(async () => {
+        if (state.kind === "realtime" && !state.autoRefreshPaused) {
+          await runJob("realtime", { reason: "timer" });
+          if (state.kind === "realtime" && !state.autoRefreshPaused) {
+            scheduleRealtimeRefresh();
+          }
         }
       }, state.refreshIntervalSec * 1000);
     }
 
-    function clearRealtimeRefresh() {
+    function clearRealtimeRefresh(label = "下次 --") {
       if (state.realtimeTimer) {
-        window.clearInterval(state.realtimeTimer);
+        window.clearTimeout(state.realtimeTimer);
         state.realtimeTimer = null;
       }
+      if (state.countdownTimer) {
+        window.clearInterval(state.countdownTimer);
+        state.countdownTimer = null;
+      }
+      state.nextRefreshAt = 0;
+      updateCountdown(label);
+    }
+
+    function updateCountdown(label = "") {
+      if (!refreshCountdownEl) return;
+      if (label) {
+        refreshCountdownEl.textContent = label;
+        return;
+      }
+      if (state.kind !== "realtime") {
+        refreshCountdownEl.textContent = "下次 --";
+        return;
+      }
+      if (state.autoRefreshPaused) {
+        refreshCountdownEl.textContent = "已暂停";
+        return;
+      }
+      if (!state.nextRefreshAt) {
+        refreshCountdownEl.textContent = "下次 --";
+        return;
+      }
+      const secondsLeft = Math.max(0, Math.ceil((state.nextRefreshAt - Date.now()) / 1000));
+      refreshCountdownEl.textContent = secondsLeft ? `下次 ${secondsLeft}s` : "刷新中";
+    }
+
+    function updateAutoRefreshButton() {
+      autoRefreshToggleEl.textContent = state.autoRefreshPaused ? "恢复" : "暂停";
+      autoRefreshToggleEl.classList.toggle("is-paused", state.autoRefreshPaused);
     }
 
     function normalizeRefreshInterval() {
       const value = Number(refreshIntervalEl.value || state.refreshIntervalSec || 30);
       if (!Number.isFinite(value)) return 30;
-      return Math.max(5, Math.round(value));
+      return Math.max(5, Math.min(60, Math.round(value / 5) * 5));
     }
 
     function statusTextFor(reason) {
@@ -1819,8 +2171,8 @@ INDEX_HTML = r"""<!doctype html>
             <td>${formatMoney(position.market_value)}</td>
             <td>${formatSignedMoney(position.unrealized_pnl)}</td>
             <td>${formatSignedMoney(position.realized_pnl)}</td>
-            <td>${escapeHtml(realtime)}</td>
-            <td>${escapeHtml(review)}</td>
+            <td class="is-long-text">${detailHtml(realtime)}</td>
+            <td class="is-long-text">${detailHtml(review)}</td>
             <td><button class="danger-btn" data-delete-position="${escapeHtml(position.symbol)}">删除</button></td>
           </tr>
         `;
@@ -1893,7 +2245,7 @@ INDEX_HTML = r"""<!doctype html>
           <section>
             <h2>持仓股</h2>
             <div class="table-wrap">
-              <table>
+              <table class="data-table">
                 <thead>
                   <tr>
                     <th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>浮盈</th><th>已实现</th><th>实时建议</th><th>复盘建议</th><th>操作</th>
@@ -1906,7 +2258,7 @@ INDEX_HTML = r"""<!doctype html>
           <section>
             <h2>最近交易</h2>
             <div class="table-wrap">
-              <table>
+              <table class="data-table">
                 <thead>
                   <tr>
                     <th>时间</th><th>代码</th><th>方向</th><th>股数</th><th>价格</th><th>已实现盈亏</th><th>交易后成本</th><th>交易后股数</th>
@@ -1996,6 +2348,21 @@ INDEX_HTML = r"""<!doctype html>
     function formatNumber(value) {
       const number = Number(value || 0);
       return number.toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+    }
+
+    function detailHtml(text) {
+      const value = String(text || "");
+      if (value.length <= 36) return escapeHtml(value);
+      return `
+        <details class="cell-detail">
+          <summary>${escapeHtml(truncateText(value, 34))}</summary>
+          <div>${escapeHtml(value)}</div>
+        </details>
+      `;
+    }
+
+    function truncateText(text, maxLength) {
+      return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1).trim()}…`;
     }
 
     async function searchInstrument() {
@@ -2119,6 +2486,8 @@ INDEX_HTML = r"""<!doctype html>
 
     function setBusy(isBusy) {
       document.body.classList.toggle("loading", isBusy);
+      refreshButtonEl.disabled = isBusy;
+      if (searchButtonEl) searchButtonEl.disabled = isBusy;
     }
 
     function escapeHtml(value) {
