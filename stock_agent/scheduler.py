@@ -2,19 +2,72 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Optional
 from zoneinfo import ZoneInfo
 
 from .config import AgentConfig, load_config
-from .digest import instruments_for_positions
 from .insights import latest_fresh_report
-from .models import Instrument, Portfolio
+from .models import Portfolio
 from .notifier import notify_report
-from .pipeline import run_daily_digest, run_insights, run_news, run_realtime_push
+from .pipeline import (
+    run_daily_digest,
+    run_insights,
+    run_news,
+    run_opening_brief,
+    run_realtime_push,
+)
 from .portfolio_manager import load_portfolio_file
-from .trading_hours import split_by_session
+
+
+@dataclass(frozen=True)
+class PushJob:
+    name: str
+    default_time: str
+    title: str
+    kind: str
+    focus_note: str = ""
+
+
+TIMED_PUSH_JOBS = [
+    PushJob(
+        name="opening_brief",
+        default_time="09:15",
+        title="开盘早知道",
+        kind="opening",
+        focus_note="持仓股票今日策略，自选股加仓/观望计划。",
+    ),
+    PushJob(
+        name="morning_flash",
+        default_time="10:30",
+        title="早盘快讯",
+        kind="realtime",
+        focus_note="早盘走势、异动、策略更新和今日关注点。",
+    ),
+    PushJob(
+        name="midday_flash",
+        default_time="11:30",
+        title="午间快讯",
+        kind="realtime",
+        focus_note="上午走势复盘，下午策略和关注点。",
+    ),
+    PushJob(
+        name="golden_1430",
+        default_time="14:30",
+        title="黄金两点半",
+        kind="realtime",
+        focus_note="临近尾盘的走势、风险位和尾盘策略。",
+    ),
+    PushJob(
+        name="daily_summary",
+        default_time="15:00",
+        title="今日总结",
+        kind="daily",
+        focus_note="全天走势、关键信息和明日策略。",
+    ),
+]
 
 
 def run_scheduler(
@@ -43,15 +96,7 @@ def run_scheduler(
             maybe_run("midday_news", current_config, state, now, lambda: run_news(current_config))
             maybe_run("evening_news", current_config, state, now, lambda: run_news(current_config))
             maybe_run_biweekly_insights(current_config, state, now)
-            maybe_run_and_push(
-                job_name="after_close_review",
-                config=current_config,
-                state=state,
-                now=now,
-                callback=lambda: run_daily_digest(current_config, current_portfolio),
-                title="每日复盘与持仓简报",
-            )
-            maybe_run_realtime_push(current_config, current_portfolio, state, now)
+            maybe_run_timed_pushes(current_config, current_portfolio, state, now)
             save_state(state_path, state)
         time.sleep(poll_seconds)
 
@@ -97,25 +142,39 @@ def maybe_run_and_push(
     print(f"{title}: {path}; push={push_result.sent}; {push_result.message}", flush=True)
 
 
-def maybe_run_realtime_push(
+def maybe_run_timed_pushes(
     config: AgentConfig,
     portfolio: Optional[Portfolio],
     state: Dict[str, str],
     now: datetime,
 ) -> None:
-    interval = realtime_push_interval_minutes(config)
-    if interval <= 0:
-        return
-    if not any_market_active(config, portfolio, now):
-        return
-    slot = (now.hour * 60 + now.minute) // interval
-    state_key = f"realtime_push:{now.date().isoformat()}:{slot}"
-    if state.get(state_key):
-        return
-    path = run_realtime_push(config, portfolio)
-    push_result = notify_report(config, "盘中实时策略简报", path)
-    state[state_key] = f"{path}; push={push_result.sent}; {push_result.message}"
-    print(f"盘中实时策略简报: {path}; push={push_result.sent}; {push_result.message}", flush=True)
+    for job in TIMED_PUSH_JOBS:
+        if not scheduled_time_due(job.name, config, now, default_time=job.default_time):
+            continue
+        state_key = f"timed_push:{job.name}:{now.date().isoformat()}"
+        if state.get(state_key):
+            continue
+        path = run_timed_push_job(job, config, portfolio)
+        push_result = notify_report(config, job.title, path)
+        state[state_key] = f"{path}; push={push_result.sent}; {push_result.message}"
+        print(f"{job.title}: {path}; push={push_result.sent}; {push_result.message}", flush=True)
+
+
+def run_timed_push_job(
+    job: PushJob,
+    config: AgentConfig,
+    portfolio: Optional[Portfolio],
+) -> str:
+    if job.kind == "opening":
+        return run_opening_brief(config, portfolio)
+    if job.kind == "daily":
+        return run_daily_digest(config, portfolio, title=job.title)
+    return run_realtime_push(
+        config,
+        portfolio,
+        title=job.title,
+        focus_note=job.focus_note,
+    )
 
 
 def maybe_run_biweekly_insights(
@@ -139,33 +198,30 @@ def scheduled_time_reached(
     job_name: str,
     config: AgentConfig,
     now: datetime,
+    default_time: str = "",
 ) -> bool:
-    scheduled_at = config.schedules.get(job_name)
+    scheduled_at = config.schedules.get(job_name, default_time)
     if not scheduled_at:
         return False
     hour, minute = [int(part) for part in scheduled_at.split(":", 1)]
     return now.hour > hour or (now.hour == hour and now.minute >= minute)
 
 
-def realtime_push_interval_minutes(config: AgentConfig) -> int:
-    raw = config.schedules.get("realtime_push_interval_minutes", "30")
-    try:
-        return max(5, int(raw))
-    except ValueError:
-        return 30
-
-
-def any_market_active(
+def scheduled_time_due(
+    job_name: str,
     config: AgentConfig,
-    portfolio: Optional[Portfolio],
     now: datetime,
+    default_time: str,
+    grace_minutes: int = 20,
 ) -> bool:
-    instruments: List[Instrument] = list(config.indices + config.watchlist)
-    if portfolio:
-        active_positions = [position for position in portfolio.positions if position.shares > 0]
-        instruments.extend(instruments_for_positions(config, active_positions))
-    active, _ = split_by_session(instruments, now=now, timezone=config.timezone)
-    return bool(active)
+    scheduled_at = config.schedules.get(job_name, default_time)
+    if not scheduled_at:
+        return False
+    hour, minute = [int(part) for part in scheduled_at.split(":", 1)]
+    current_minutes = now.hour * 60 + now.minute
+    scheduled_minutes = hour * 60 + minute
+    delta = current_minutes - scheduled_minutes
+    return 0 <= delta <= grace_minutes
 
 
 def load_state(path: Path) -> Dict[str, str]:

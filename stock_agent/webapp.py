@@ -25,6 +25,8 @@ from .search import search_instruments
 
 
 REPORT_KINDS = {
+    "opening_brief": "realtime",
+    "daily_digest": "review",
     "biweekly_insights": "insights",
     "market_review": "review",
     "realtime_watchlist": "realtime",
@@ -291,6 +293,44 @@ class WebApp:
                 "state": self.state(),
             }
 
+    def delete_instrument(self, symbol: str, list_key: str = "watchlist") -> Dict[str, object]:
+        with self.lock:
+            symbol = symbol.strip()
+            if not symbol:
+                raise ValueError("symbol is required")
+            if list_key not in {"watchlist", "indices"}:
+                raise ValueError("list must be watchlist or indices")
+            raw = load_mapping(self.config_path)
+            instruments = list(raw.get(list_key, []))
+            kept = [
+                item
+                for item in instruments
+                if str(item.get("symbol", "")).strip() != symbol
+            ]
+            if len(kept) == len(instruments):
+                return {
+                    "deleted": False,
+                    "message": f"{symbol} 不在{instrument_pool_label(list_key)}中",
+                    "state": self.state(),
+                }
+            raw[list_key] = kept
+            if list_key == "watchlist":
+                theme_stock_map = {}
+                for theme, values in dict(raw.get("theme_stock_map", {})).items():
+                    symbols = [str(value) for value in values if str(value) != symbol]
+                    theme_stock_map[theme] = symbols
+                raw["theme_stock_map"] = theme_stock_map
+
+            Path(self.config_path).write_text(
+                json.dumps(raw, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return {
+                "deleted": True,
+                "message": f"已删除 {symbol}",
+                "state": self.state(),
+            }
+
 
 def build_portfolio_view(portfolio: Portfolio, app: WebApp) -> Dict[str, object]:
     realtime = latest_table_by_symbol(app, "realtime")
@@ -471,13 +511,17 @@ def create_handler(app: WebApp):
 
         def do_DELETE(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path != "/api/portfolio/positions":
+            if parsed.path not in {"/api/portfolio/positions", "/api/instruments"}:
                 self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
                 return
             query = parse_qs(parsed.query)
             symbol = query.get("symbol", [""])[0].strip()
+            list_key = query.get("list", ["watchlist"])[0].strip() or "watchlist"
             try:
-                self.send_json(app.delete_position(symbol))
+                if parsed.path == "/api/instruments":
+                    self.send_json(app.delete_instrument(symbol, list_key=list_key))
+                else:
+                    self.send_json(app.delete_position(symbol))
             except ValueError as exc:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception as exc:
@@ -553,6 +597,10 @@ def report_title(path: Path) -> str:
         return first_heading(path.read_text(encoding="utf-8")) or path.name
     except OSError:
         return path.name
+
+
+def instrument_pool_label(list_key: str) -> str:
+    return "指数池" if list_key == "indices" else "自选股"
 
 
 def first_heading(markdown: str) -> str:
@@ -1301,6 +1349,63 @@ INDEX_HTML = r"""<!doctype html>
       gap: 8px;
     }
 
+    .watchlist-manager {
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .watchlist-manager header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .watchlist-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .watchlist-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid #d5e2d9;
+      background: #f7faf8;
+      border-radius: 999px;
+      padding: 4px 6px 4px 9px;
+      max-width: 100%;
+    }
+
+    .watchlist-chip span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 180px;
+      font-size: 12px;
+    }
+
+    .watchlist-chip button {
+      border: 0;
+      background: transparent;
+      color: #8c2f2f;
+      cursor: pointer;
+      min-width: 22px;
+      min-height: 22px;
+      border-radius: 999px;
+      font-weight: 720;
+      line-height: 1;
+    }
+
+    .watchlist-chip button:hover {
+      background: #f5eaea;
+    }
+
     .search-row {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1700,6 +1805,15 @@ INDEX_HTML = r"""<!doctype html>
               <div class="theme-form">
                 <input id="theme-input" placeholder="加入自选时的主题标签，可选：AI, PCB" autocomplete="off" />
               </div>
+              <div class="watchlist-manager">
+                <header>
+                  <strong>自选股管理</strong>
+                  <span id="watchlist-manager-count">0</span>
+                </header>
+                <div class="watchlist-chips" id="watchlist-manager">
+                  <div class="empty">暂无自选股。</div>
+                </div>
+              </div>
               <div class="result-list" id="search-results">
                 <div class="empty">搜索股票、港股或指数后可直接加入自选/指数池。</div>
               </div>
@@ -1734,6 +1848,7 @@ INDEX_HTML = r"""<!doctype html>
     const state = {
       kind: initialKind,
       reports: [],
+      watchlist: [],
       activeReport: "",
       searchResults: [],
       activeJob: "",
@@ -1764,6 +1879,8 @@ INDEX_HTML = r"""<!doctype html>
     const searchInput = document.getElementById("search-input");
     const themeInput = document.getElementById("theme-input");
     const searchResultsEl = document.getElementById("search-results");
+    const watchlistManagerEl = document.getElementById("watchlist-manager");
+    const watchlistManagerCountEl = document.getElementById("watchlist-manager-count");
     const refreshButtonEl = document.getElementById("refresh");
     const refreshIntervalEl = document.getElementById("refresh-interval");
     const intervalControlEl = document.getElementById("interval-control");
@@ -1818,6 +1935,11 @@ INDEX_HTML = r"""<!doctype html>
       event.preventDefault();
       searchInstrument();
     });
+    watchlistManagerEl.addEventListener("click", event => {
+      const button = event.target.closest("[data-delete-watchlist]");
+      if (!button) return;
+      deleteWatchlistInstrument(button.dataset.deleteWatchlist);
+    });
     assistantForm.addEventListener("submit", event => {
       event.preventDefault();
       askAssistant();
@@ -1843,11 +1965,13 @@ INDEX_HTML = r"""<!doctype html>
       setStatus("刷新中");
       const data = await getJson("/api/state");
       state.reports = data.reports || [];
+      state.watchlist = data.watchlist || [];
       document.getElementById("watch-count").textContent = data.watchlist.length;
       document.getElementById("index-count").textContent = data.indices.length;
       document.getElementById("portfolio-count").textContent = data.portfolio_count;
       document.getElementById("count-positions").textContent = data.portfolio_count;
       updateAssistantMode(data.assistant);
+      renderWatchlistManager();
       updateCounts();
       if (!state.activeReport) {
         await openLatestOfKind();
@@ -2430,9 +2554,11 @@ INDEX_HTML = r"""<!doctype html>
         const data = await postJson("/api/instruments", payload);
         if (data.state) {
           state.reports = data.state.reports || state.reports;
+          state.watchlist = data.state.watchlist || state.watchlist;
           document.getElementById("watch-count").textContent = data.state.watchlist.length;
           document.getElementById("index-count").textContent = data.state.indices.length;
           document.getElementById("portfolio-count").textContent = data.state.portfolio_count;
+          renderWatchlistManager();
           updateCounts();
         }
         result.already_added = true;
@@ -2440,6 +2566,51 @@ INDEX_HTML = r"""<!doctype html>
         setStatus(data.message || "已添加");
       } catch (error) {
         setStatus(error.message || "添加失败");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function renderWatchlistManager() {
+      watchlistManagerCountEl.textContent = `${state.watchlist.length} 只`;
+      if (!state.watchlist.length) {
+        watchlistManagerEl.innerHTML = '<div class="empty">暂无自选股。</div>';
+        return;
+      }
+      watchlistManagerEl.innerHTML = state.watchlist.map(item => `
+        <span class="watchlist-chip" title="${escapeHtml(item.symbol)} ${escapeHtml(item.name)}">
+          <span>${escapeHtml(item.symbol)} ${escapeHtml(item.name)}</span>
+          <button type="button" data-delete-watchlist="${escapeHtml(item.symbol)}" aria-label="删除 ${escapeHtml(item.name)}">×</button>
+        </span>
+      `).join("");
+    }
+
+    async function deleteWatchlistInstrument(symbol) {
+      if (!symbol) return;
+      const ok = window.confirm(`确定从自选股删除 ${symbol} 吗？`);
+      if (!ok) return;
+      setBusy(true);
+      setStatus("删除自选股中");
+      try {
+        const data = await deleteJson(`/api/instruments?list=watchlist&symbol=${encodeURIComponent(symbol)}`);
+        if (data.state) {
+          state.reports = data.state.reports || state.reports;
+          state.watchlist = data.state.watchlist || [];
+          document.getElementById("watch-count").textContent = data.state.watchlist.length;
+          document.getElementById("index-count").textContent = data.state.indices.length;
+          document.getElementById("portfolio-count").textContent = data.state.portfolio_count;
+          updateCounts();
+          renderWatchlistManager();
+        }
+        if (state.searchResults.length) {
+          state.searchResults = state.searchResults.map(result => (
+            result.symbol === symbol ? { ...result, already_added: false } : result
+          ));
+          renderSearchResults();
+        }
+        setStatus(data.message || "已删除自选股");
+      } catch (error) {
+        setStatus(error.message || "删除失败");
       } finally {
         setBusy(false);
       }

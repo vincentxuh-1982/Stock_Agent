@@ -6,6 +6,7 @@ from .analyzer import analyze_many
 from .config import AgentConfig
 from .data_providers import provider_from_config
 from .digest import run_daily_digest as run_daily_digest_report
+from .digest import run_opening_brief_digest
 from .digest import run_realtime_push_digest
 from .insights import run_insights as run_biweekly_insights
 from .models import AnalysisResult, Portfolio
@@ -40,12 +41,25 @@ def run_insights(config: AgentConfig, force: bool = False) -> str:
     return run_biweekly_insights(config, force=force)
 
 
-def run_daily_digest(config: AgentConfig, portfolio: Optional[Portfolio] = None) -> str:
-    return run_daily_digest_report(config, portfolio)
+def run_daily_digest(
+    config: AgentConfig,
+    portfolio: Optional[Portfolio] = None,
+    title: str = "每日复盘与持仓简报",
+) -> str:
+    return run_daily_digest_report(config, portfolio, title=title)
 
 
-def run_realtime_push(config: AgentConfig, portfolio: Optional[Portfolio] = None) -> str:
-    return run_realtime_push_digest(config, portfolio)
+def run_opening_brief(config: AgentConfig, portfolio: Optional[Portfolio] = None) -> str:
+    return run_opening_brief_digest(config, portfolio)
+
+
+def run_realtime_push(
+    config: AgentConfig,
+    portfolio: Optional[Portfolio] = None,
+    title: str = "盘中实时策略简报",
+    focus_note: str = "盘中跟踪持仓策略和自选股机会。",
+) -> str:
+    return run_realtime_push_digest(config, portfolio, title=title, focus_note=focus_note)
 
 
 def run_realtime(config: AgentConfig) -> str:

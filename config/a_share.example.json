@@ -59,11 +59,14 @@
     "券商": []
   },
   "schedules": {
-    "after_close_review": "15:10",
+    "opening_brief": "09:15",
+    "morning_flash": "10:30",
+    "midday_flash": "11:30",
+    "golden_1430": "14:30",
+    "daily_summary": "15:00",
     "midday_news": "12:30",
     "evening_news": "20:30",
-    "biweekly_insights": "21:00",
-    "realtime_push_interval_minutes": "30"
+    "biweekly_insights": "21:00"
   },
   "push": {
     "enabled": false,

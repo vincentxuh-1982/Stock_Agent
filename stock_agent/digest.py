@@ -24,7 +24,11 @@ from .reports import (
 )
 
 
-def run_daily_digest(config: AgentConfig, portfolio: Optional[Portfolio]) -> str:
+def run_daily_digest(
+    config: AgentConfig,
+    portfolio: Optional[Portfolio],
+    title: str = "每日复盘与持仓简报",
+) -> str:
     provider = provider_from_config(config)
     errors: List[str] = []
     index_results = analyze_many(config.indices, provider, config, errors=errors)
@@ -47,6 +51,7 @@ def run_daily_digest(config: AgentConfig, portfolio: Optional[Portfolio]) -> str
         write_portfolio_report(config.output_dir, position_results, active_positions, errors)
 
     content = render_daily_digest(
+        title=title,
         config=config,
         index_results=index_results,
         watch_results=watch_results,
@@ -61,7 +66,36 @@ def run_daily_digest(config: AgentConfig, portfolio: Optional[Portfolio]) -> str
     return str(path)
 
 
-def run_realtime_push_digest(config: AgentConfig, portfolio: Optional[Portfolio]) -> str:
+def run_opening_brief_digest(config: AgentConfig, portfolio: Optional[Portfolio]) -> str:
+    provider = provider_from_config(config)
+    errors: List[str] = []
+    watch_results = analyze_many(config.watchlist, provider, config, errors=errors)
+    active_positions = active_portfolio_positions(portfolio)
+    position_instruments = instruments_for_positions(config, active_positions)
+    position_results = analyze_many(position_instruments, provider, config, errors=errors)
+    news_items = fetch_news(config, limit_per_source=30)
+    focus_news = collect_focus_news(
+        unique_instruments(position_instruments + config.watchlist),
+        news_items,
+        limit=3,
+    )
+    content = render_opening_brief(
+        watch_results=watch_results,
+        position_results=position_results,
+        positions=active_positions,
+        focus_news=focus_news,
+        errors=errors,
+    )
+    path = write_report_file(config.output_dir, "opening_brief", content, archive=True)
+    return str(path)
+
+
+def run_realtime_push_digest(
+    config: AgentConfig,
+    portfolio: Optional[Portfolio],
+    title: str = "盘中实时策略简报",
+    focus_note: str = "盘中跟踪持仓策略和自选股机会。",
+) -> str:
     results, inactive, errors = run_realtime_analysis(config)
     write_report_file(
         config.output_dir,
@@ -70,12 +104,97 @@ def run_realtime_push_digest(config: AgentConfig, portfolio: Optional[Portfolio]
         archive=False,
     )
     active_positions = active_portfolio_positions(portfolio)
-    content = render_realtime_push_digest(results, active_positions, errors)
+    content = render_realtime_push_digest(results, active_positions, errors, title, focus_note)
     path = write_report_file(config.output_dir, "realtime_push", content, archive=False)
     return str(path)
 
 
+def render_opening_brief(
+    watch_results: List[AnalysisResult],
+    position_results: List[AnalysisResult],
+    positions: List[Position],
+    focus_news: Dict[str, List[NewsItem]],
+    errors: List[str],
+) -> str:
+    by_position = {position.symbol: position for position in positions}
+    by_result = {result.instrument.symbol: result for result in position_results}
+    watch_by_symbol = {result.instrument.symbol: result for result in watch_results}
+    lines = [
+        "# 开盘早知道",
+        "",
+        f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"- 关注范围：持仓股 {len(positions)}；自选股 {len(watch_results)}",
+        "- 依据：上一交易日收盘结构、短线概率、持仓成本和近三日新闻；开盘后需用实时走势修正。",
+        "",
+        "## 持仓股票今日策略",
+        "",
+    ]
+    if positions:
+        lines.extend(
+            [
+                "| 代码 | 名称 | 成本 | 参考价 | 盈亏 | 未来3日概率 | 今日动作 | 关注点 |",
+                "| --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+            ]
+        )
+        for position in positions:
+            result = by_result.get(position.symbol)
+            if not result:
+                lines.append(
+                    f"| {position.symbol} | {position.name} | {position.cost:.2f} | - | - | - | 持有观察 | 等开盘后确认成交量和支撑位 |"
+                )
+                continue
+            pnl_pct = (result.close - position.cost) / position.cost if position.cost else 0
+            lines.append(
+                f"| {position.symbol} | {position.name} | {position.cost:.2f} | {result.close:.2f} | {pnl_pct:.1%} | {forecast_probability_text(result.forecast_3d)} | {position_advice(result, position)} | {forecast_condition_text(result.forecast_3d)} |"
+            )
+    else:
+        lines.append("当前没有有效持仓。")
+
+    lines.extend(["", "## 自选股今日观察", ""])
+    watch_focus = select_opening_watch_focus(
+        [result for result in watch_results if result.instrument.symbol not in by_position]
+    )
+    if watch_focus:
+        lines.extend(
+            [
+                "| 代码 | 名称 | 参考价 | 短期 | 未来3日概率 | 今日动作 | 关注点 |",
+                "| --- | --- | ---: | --- | --- | --- | --- |",
+            ]
+        )
+        for result in watch_focus:
+            lines.append(
+                f"| {result.instrument.symbol} | {result.instrument.name} | {result.close:.2f} | {result.short_view} | {forecast_probability_text(result.forecast_3d)} | {entry_advice(result)} | {forecast_condition_text(result.forecast_3d)} |"
+            )
+    else:
+        lines.append("今天自选股以观望为主，等待开盘后的成交量和支撑/压力确认。")
+
+    lines.extend(["", "## 盘前重点新闻", ""])
+    focus_order = list(by_position) + [
+        result.instrument.symbol
+        for result in watch_focus
+        if result.instrument.symbol not in by_position
+    ]
+    wrote_news = False
+    for symbol in focus_order[:8]:
+        result = by_result.get(symbol) or watch_by_symbol.get(symbol)
+        items = focus_news.get(symbol, [])
+        if not result or not items:
+            continue
+        lines.append(f"### {symbol} {result.instrument.name}")
+        for item in items[:2]:
+            lines.append(f"- {news_line(item)}")
+        lines.append("")
+        wrote_news = True
+    if not wrote_news:
+        lines.append("暂未抓到明确对应持仓/自选股的最新新闻，开盘后优先看量价验证。")
+
+    lines.extend(render_errors(errors))
+    lines.extend(["", "本简报用于开盘前计划整理，不构成投资建议。"])
+    return "\n".join(lines) + "\n"
+
+
 def render_daily_digest(
+    title: str,
     config: AgentConfig,
     index_results: List[AnalysisResult],
     watch_results: List[AnalysisResult],
@@ -90,7 +209,7 @@ def render_daily_digest(
     by_result = {result.instrument.symbol: result for result in position_results}
     watch_by_symbol = {result.instrument.symbol: result for result in watch_results}
     lines = [
-        "# 每日复盘与持仓简报",
+        f"# {title}",
         "",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"- 市场结论：{summarize_market(index_results)}",
@@ -170,14 +289,17 @@ def render_realtime_push_digest(
     results: List[RealtimeResult],
     positions: List[Position],
     errors: List[str],
+    title: str,
+    focus_note: str,
 ) -> str:
     position_by_symbol = {position.symbol: position for position in positions}
     result_by_symbol = {result.instrument.symbol: result for result in results}
     lines = [
-        "# 盘中实时策略简报",
+        f"# {title}",
         "",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"- 交易中标的：{len(results)}；持仓股：{len(positions)}",
+        f"- 关注重点：{focus_note}",
         "",
         "## 持仓股策略",
         "",
@@ -204,33 +326,63 @@ def render_realtime_push_digest(
     else:
         lines.append("当前没有有效持仓。")
 
-    opportunities = select_realtime_entry_opportunities(
-        [
-            result
-            for result in results
-            if result.instrument.symbol not in position_by_symbol
-            and not is_cn_index(result.instrument)
-            and not is_hk_index(result.instrument)
-        ]
-    )
-    lines.extend(["", "## 自选股建仓机会", ""])
-    if opportunities:
+    watch_results = [
+        result
+        for result in results
+        if result.instrument.symbol not in position_by_symbol
+        and not is_cn_index(result.instrument)
+        and not is_hk_index(result.instrument)
+    ]
+    opportunities = select_realtime_entry_opportunities(watch_results)
+    focus_results = opportunities or select_realtime_watch_focus(watch_results)
+    lines.extend(["", "## 自选股策略和关注点", ""])
+    if focus_results:
         lines.extend(
             [
-                "| 代码 | 名称 | 现价 | 涨跌 | 状态 | 当日概率 | 条件 | 建仓观察 |",
+                "| 代码 | 名称 | 现价 | 涨跌 | 状态 | 当日概率 | 条件 | 动作 |",
                 "| --- | --- | ---: | ---: | --- | --- | --- | --- |",
             ]
         )
-        for result in opportunities:
+        for result in focus_results:
             quote = result.quote
             lines.append(
                 f"| {result.instrument.symbol} | {result.instrument.name} | {quote.price:.2f} | {quote.change_pct:.2%} | {result.status} | {forecast_probability_text(result.intraday_forecast)} | {forecast_condition_text(result.intraday_forecast)} | {result.action} |"
             )
     else:
-        lines.append("本轮没有达到建仓机会阈值的自选股。")
+        lines.append("本轮自选股以观望为主，没有达到建仓或加仓提醒阈值的标的。")
     lines.extend(render_errors(errors))
-    lines.extend(["", "本简报默认每 30 分钟生成一次，仅用于盘中跟踪和风险提醒。"])
+    lines.extend(["", "本简报用于盘中跟踪和风险提醒，不构成投资建议。"])
     return "\n".join(lines) + "\n"
+
+
+def select_opening_watch_focus(results: Sequence[AnalysisResult]) -> List[AnalysisResult]:
+    opportunities = select_entry_opportunities(results)
+    if opportunities:
+        return opportunities
+    return sorted(
+        [
+            result
+            for result in results
+            if not is_cn_index(result.instrument) and not is_hk_index(result.instrument)
+        ],
+        key=lambda item: (
+            item.forecast_3d.up_probability if item.forecast_3d else 0.5,
+            item.score_short + item.score_mid,
+        ),
+        reverse=True,
+    )[:8]
+
+
+def select_realtime_watch_focus(results: Sequence[RealtimeResult]) -> List[RealtimeResult]:
+    return sorted(
+        results,
+        key=lambda item: (
+            item.urgency,
+            abs(item.quote.change_pct),
+            item.intraday_forecast.up_probability if item.intraday_forecast else 0.5,
+        ),
+        reverse=True,
+    )[:8]
 
 
 def render_compact_analysis_table(
