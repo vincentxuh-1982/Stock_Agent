@@ -13,6 +13,7 @@ from .models import (
     StockCandidate,
 )
 from .prediction import forecast_condition_text, forecast_probability_text
+from .price_levels import analysis_price_plan, price_or_dash, realtime_price_plan
 from .recommender import entry_advice, position_advice, summarize_market
 
 
@@ -228,8 +229,8 @@ def candidate_label(candidate: StockCandidate) -> str:
 
 def render_realtime_table(results: List[RealtimeResult]) -> List[str]:
     lines = [
-        "| 代码 | 名称 | 市场 | 现价 | 涨跌 | 状态 | 当日概率 | 优先级 | 量能 | 位置 | 条件说明 | 动作 |",
-        "| --- | --- | --- | ---: | ---: | --- | --- | ---: | ---: | --- | --- | --- |",
+        "| 代码 | 名称 | 市场 | 现价 | 涨跌 | 状态 | 当日概率 | 优先级 | 量能 | 位置 | 建仓区间 | 减仓价 | 目标价 | 条件说明 | 动作 |",
+        "| --- | --- | --- | ---: | ---: | --- | --- | ---: | ---: | --- | --- | ---: | ---: | --- | --- |",
     ]
     for result in results:
         quote = result.quote
@@ -237,8 +238,9 @@ def render_realtime_table(results: List[RealtimeResult]) -> List[str]:
         forecast = result.intraday_forecast
         probability = forecast_probability_text(forecast) if forecast else "-"
         condition = forecast_condition_text(forecast) if forecast else "-"
+        plan = realtime_price_plan(result)
         lines.append(
-            "| {symbol} | {name} | {market} | {price:.2f} | {change:.2%} | {status} | {probability} | {urgency} | {amount_ratio:.0%} | {position} | {condition} | {action} |".format(
+            "| {symbol} | {name} | {market} | {price:.2f} | {change:.2%} | {status} | {probability} | {urgency} | {amount_ratio:.0%} | {position} | {entry_zone} | {reduce_price} | {target_price} | {condition} | {action} |".format(
                 symbol=result.instrument.symbol,
                 name=result.instrument.name,
                 market=result.session.market if result.session else result.instrument.market,
@@ -249,6 +251,9 @@ def render_realtime_table(results: List[RealtimeResult]) -> List[str]:
                 urgency=result.urgency,
                 amount_ratio=result.amount_ratio,
                 position=position,
+                entry_zone=plan.entry_zone,
+                reduce_price=price_or_dash(plan.reduce_price),
+                target_price=price_or_dash(plan.target_price),
                 condition=condition,
                 action=result.action,
             )
@@ -288,17 +293,17 @@ def render_portfolio_report(
         "",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
-        "| 代码 | 名称 | 成本 | 现价 | 盈亏 | 短期 | 未来3日概率 | 条件说明 | 中期 | 风险 | 建议 |",
-        "| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- |",
+        "| 代码 | 名称 | 成本 | 现价 | 盈亏 | 短期 | 未来3日概率 | 加仓价 | 减仓价 | 止损价 | 目标价 | 条件说明 | 中期 | 风险 | 建议 |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
     ]
     active_positions = [position for position in positions if position.shares > 0]
     if not active_positions:
-        lines.append("| - | - | - | - | - | - | - | - | - | - | 暂无有效持仓 |")
+        lines.append("| - | - | - | - | - | - | - | - | - | - | - | - | - | - | 暂无有效持仓 |")
     for position in active_positions:
         result = by_symbol.get(position.symbol)
         if result is None:
             lines.append(
-                f"| {position.symbol} | {position.name} | {position.cost:.2f} | - | - | - | - | - | - | - | 未获取到行情 |"
+                f"| {position.symbol} | {position.name} | {position.cost:.2f} | - | - | - | - | - | - | - | - | - | - | - | 未获取到行情 |"
             )
             continue
         pnl_pct = (
@@ -307,8 +312,9 @@ def render_portfolio_report(
         forecast = result.forecast_3d
         probability = forecast_probability_text(forecast) if forecast else "-"
         condition = forecast_condition_text(forecast) if forecast else "-"
+        plan = analysis_price_plan(result, position)
         lines.append(
-            "| {symbol} | {name} | {cost:.2f} | {close:.2f} | {pnl:.1%} | {short} | {probability} | {condition} | {mid} | {risk} | {advice} |".format(
+            "| {symbol} | {name} | {cost:.2f} | {close:.2f} | {pnl:.1%} | {short} | {probability} | {add_price} | {reduce_price} | {stop_loss} | {target_price} | {condition} | {mid} | {risk} | {advice} |".format(
                 symbol=position.symbol,
                 name=position.name,
                 cost=position.cost,
@@ -316,6 +322,10 @@ def render_portfolio_report(
                 pnl=pnl_pct,
                 short=result.short_view,
                 probability=probability,
+                add_price=price_or_dash(plan.add_price),
+                reduce_price=price_or_dash(plan.reduce_price),
+                stop_loss=price_or_dash(plan.stop_loss),
+                target_price=price_or_dash(plan.target_price),
                 condition=condition,
                 mid=result.mid_view,
                 risk=result.risk_level,
@@ -333,8 +343,8 @@ def render_result_table(
 ) -> List[str]:
     if include_advice:
         lines = [
-            "| 代码 | 名称 | 收盘 | 涨跌 | 短期 T+1~3 | 未来3日概率 | 条件说明 | 中期 T+30~60 | 风险 | 关键信号 | 建仓建议 |",
-            "| --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |",
+            "| 代码 | 名称 | 收盘 | 涨跌 | 短期 T+1~3 | 未来3日概率 | 建仓区间 | 止损价 | 目标价 | 条件说明 | 中期 T+30~60 | 风险 | 关键信号 | 建仓建议 |",
+            "| --- | --- | ---: | ---: | --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- |",
         ]
     else:
         lines = [
@@ -348,9 +358,11 @@ def render_result_table(
         probability = forecast_probability_text(forecast) if forecast else "-"
         condition = forecast_condition_text(forecast) if forecast else "-"
         if include_advice:
+            plan = analysis_price_plan(result)
             base = (
                 f"| {result.instrument.symbol} | {result.instrument.name} | {result.close:.2f} | "
-                f"{result.change_pct:.2%} | {result.short_view} | {probability} | {condition} | "
+                f"{result.change_pct:.2%} | {result.short_view} | {probability} | {plan.entry_zone} | "
+                f"{price_or_dash(plan.stop_loss)} | {price_or_dash(plan.target_price)} | {condition} | "
                 f"{result.mid_view} | {result.risk_level} | {signal} | {entry_advice(result)} |"
             )
         else:

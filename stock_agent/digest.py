@@ -11,6 +11,7 @@ from .insights import dedupe_news, news_line, provider_symbol, recent_news
 from .models import AnalysisResult, Instrument, NewsItem, Portfolio, Position, RealtimeResult
 from .news import fetch_hot_candidates, fetch_news, fetch_stock_news, find_hotspots
 from .prediction import forecast_condition_text, forecast_probability_text
+from .price_levels import analysis_price_plan, price_or_dash, realtime_price_plan
 from .realtime import is_cn_index, is_hk_index, run_realtime_analysis
 from .recommender import entry_advice, position_advice, summarize_market
 from .reports import (
@@ -132,20 +133,21 @@ def render_opening_brief(
     if positions:
         lines.extend(
             [
-                "| 代码 | 名称 | 成本 | 参考价 | 盈亏 | 未来3日概率 | 今日动作 | 关注点 |",
-                "| --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+                "| 代码 | 名称 | 成本 | 参考价 | 盈亏 | 未来3日概率 | 加仓价 | 减仓价 | 目标价 | 今日动作 | 关注点 |",
+                "| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |",
             ]
         )
         for position in positions:
             result = by_result.get(position.symbol)
             if not result:
                 lines.append(
-                    f"| {position.symbol} | {position.name} | {position.cost:.2f} | - | - | - | 持有观察 | 等开盘后确认成交量和支撑位 |"
+                    f"| {position.symbol} | {position.name} | {position.cost:.2f} | - | - | - | - | - | - | 持有观察 | 等开盘后确认成交量和支撑位 |"
                 )
                 continue
             pnl_pct = (result.close - position.cost) / position.cost if position.cost else 0
+            plan = analysis_price_plan(result, position)
             lines.append(
-                f"| {position.symbol} | {position.name} | {position.cost:.2f} | {result.close:.2f} | {pnl_pct:.1%} | {forecast_probability_text(result.forecast_3d)} | {position_advice(result, position)} | {forecast_condition_text(result.forecast_3d)} |"
+                f"| {position.symbol} | {position.name} | {position.cost:.2f} | {result.close:.2f} | {pnl_pct:.1%} | {forecast_probability_text(result.forecast_3d)} | {price_or_dash(plan.add_price)} | {price_or_dash(plan.reduce_price)} | {price_or_dash(plan.target_price)} | {position_advice(result, position)} | {forecast_condition_text(result.forecast_3d)} |"
             )
     else:
         lines.append("当前没有有效持仓。")
@@ -157,13 +159,14 @@ def render_opening_brief(
     if watch_focus:
         lines.extend(
             [
-                "| 代码 | 名称 | 参考价 | 短期 | 未来3日概率 | 今日动作 | 关注点 |",
-                "| --- | --- | ---: | --- | --- | --- | --- |",
+                "| 代码 | 名称 | 参考价 | 短期 | 未来3日概率 | 建仓区间 | 止损价 | 目标价 | 今日动作 | 关注点 |",
+                "| --- | --- | ---: | --- | --- | --- | ---: | ---: | --- | --- |",
             ]
         )
         for result in watch_focus:
+            plan = analysis_price_plan(result)
             lines.append(
-                f"| {result.instrument.symbol} | {result.instrument.name} | {result.close:.2f} | {result.short_view} | {forecast_probability_text(result.forecast_3d)} | {entry_advice(result)} | {forecast_condition_text(result.forecast_3d)} |"
+                f"| {result.instrument.symbol} | {result.instrument.name} | {result.close:.2f} | {result.short_view} | {forecast_probability_text(result.forecast_3d)} | {plan.entry_zone} | {price_or_dash(plan.stop_loss)} | {price_or_dash(plan.target_price)} | {entry_advice(result)} | {forecast_condition_text(result.forecast_3d)} |"
             )
     else:
         lines.append("今天自选股以观望为主，等待开盘后的成交量和支撑/压力确认。")
@@ -307,21 +310,22 @@ def render_realtime_push_digest(
     if positions:
         lines.extend(
             [
-                "| 代码 | 名称 | 现价 | 涨跌 | 当日概率 | 趋势/状态 | 策略 |",
-                "| --- | --- | ---: | ---: | --- | --- | --- |",
+                "| 代码 | 名称 | 现价 | 涨跌 | 当日概率 | 趋势/状态 | 加仓价 | 减仓价 | 目标价 | 策略 |",
+                "| --- | --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- |",
             ]
         )
         for position in positions:
             result = result_by_symbol.get(position.symbol)
             if not result:
                 lines.append(
-                    f"| {position.symbol} | {position.name} | - | - | - | 未在交易时段/未获取行情 | 暂不动作，等待行情更新 |"
+                    f"| {position.symbol} | {position.name} | - | - | - | 未在交易时段/未获取行情 | - | - | - | 暂不动作，等待行情更新 |"
                 )
                 continue
             quote = result.quote
             probability = forecast_probability_text(result.intraday_forecast)
+            plan = realtime_price_plan(result, position)
             lines.append(
-                f"| {position.symbol} | {position.name} | {quote.price:.2f} | {quote.change_pct:.2%} | {probability} | {result.status} | {realtime_position_strategy(result, position)} |"
+                f"| {position.symbol} | {position.name} | {quote.price:.2f} | {quote.change_pct:.2%} | {probability} | {result.status} | {price_or_dash(plan.add_price)} | {price_or_dash(plan.reduce_price)} | {price_or_dash(plan.target_price)} | {realtime_position_strategy(result, position)} |"
             )
     else:
         lines.append("当前没有有效持仓。")
@@ -339,14 +343,15 @@ def render_realtime_push_digest(
     if focus_results:
         lines.extend(
             [
-                "| 代码 | 名称 | 现价 | 涨跌 | 状态 | 当日概率 | 条件 | 动作 |",
-                "| --- | --- | ---: | ---: | --- | --- | --- | --- |",
+                "| 代码 | 名称 | 现价 | 涨跌 | 状态 | 当日概率 | 建仓区间 | 止损价 | 目标价 | 条件 | 动作 |",
+                "| --- | --- | ---: | ---: | --- | --- | --- | ---: | ---: | --- | --- |",
             ]
         )
         for result in focus_results:
             quote = result.quote
+            plan = realtime_price_plan(result)
             lines.append(
-                f"| {result.instrument.symbol} | {result.instrument.name} | {quote.price:.2f} | {quote.change_pct:.2%} | {result.status} | {forecast_probability_text(result.intraday_forecast)} | {forecast_condition_text(result.intraday_forecast)} | {result.action} |"
+                f"| {result.instrument.symbol} | {result.instrument.name} | {quote.price:.2f} | {quote.change_pct:.2%} | {result.status} | {forecast_probability_text(result.intraday_forecast)} | {plan.entry_zone} | {price_or_dash(plan.stop_loss)} | {price_or_dash(plan.target_price)} | {forecast_condition_text(result.intraday_forecast)} | {result.action} |"
             )
     else:
         lines.append("本轮自选股以观望为主，没有达到建仓或加仓提醒阈值的标的。")
@@ -391,8 +396,8 @@ def render_compact_analysis_table(
 ) -> List[str]:
     if include_entry:
         lines = [
-            "| 代码 | 名称 | 收盘 | 涨跌 | 短期 | 未来3日概率 | 条件 | 建仓策略 |",
-            "| --- | --- | ---: | ---: | --- | --- | --- | --- |",
+            "| 代码 | 名称 | 收盘 | 涨跌 | 短期 | 未来3日概率 | 建仓区间 | 止损价 | 目标价 | 条件 | 建仓策略 |",
+            "| --- | --- | ---: | ---: | --- | --- | --- | ---: | ---: | --- | --- |",
         ]
     else:
         lines = [
@@ -407,7 +412,12 @@ def render_compact_analysis_table(
             f"{result.change_pct:.2%} | {result.short_view} | {probability} | {condition} |"
         )
         if include_entry:
-            row = row[:-1] + f"| {entry_advice(result)} |"
+            plan = analysis_price_plan(result)
+            row = (
+                f"| {result.instrument.symbol} | {result.instrument.name} | {result.close:.2f} | "
+                f"{result.change_pct:.2%} | {result.short_view} | {probability} | {plan.entry_zone} | "
+                f"{price_or_dash(plan.stop_loss)} | {price_or_dash(plan.target_price)} | {condition} | {entry_advice(result)} |"
+            )
         lines.append(row)
     return lines
 
@@ -417,19 +427,20 @@ def render_position_digest_table(
     by_result: Dict[str, AnalysisResult],
 ) -> List[str]:
     lines = [
-        "| 代码 | 名称 | 成本 | 收盘 | 盈亏 | 短期 | 未来3日概率 | 持仓策略 |",
-        "| --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+        "| 代码 | 名称 | 成本 | 收盘 | 盈亏 | 短期 | 未来3日概率 | 加仓价 | 减仓价 | 目标价 | 持仓策略 |",
+        "| --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | --- |",
     ]
     for position in positions:
         result = by_result.get(position.symbol)
         if not result:
             lines.append(
-                f"| {position.symbol} | {position.name} | {position.cost:.2f} | - | - | - | - | 未获取行情，暂不动作 |"
+                f"| {position.symbol} | {position.name} | {position.cost:.2f} | - | - | - | - | - | - | - | 未获取行情，暂不动作 |"
             )
             continue
         pnl_pct = (result.close - position.cost) / position.cost if position.cost else 0
+        plan = analysis_price_plan(result, position)
         lines.append(
-            f"| {position.symbol} | {position.name} | {position.cost:.2f} | {result.close:.2f} | {pnl_pct:.1%} | {result.short_view} | {forecast_probability_text(result.forecast_3d)} | {position_advice(result, position)} |"
+            f"| {position.symbol} | {position.name} | {position.cost:.2f} | {result.close:.2f} | {pnl_pct:.1%} | {result.short_view} | {forecast_probability_text(result.forecast_3d)} | {price_or_dash(plan.add_price)} | {price_or_dash(plan.reduce_price)} | {price_or_dash(plan.target_price)} | {position_advice(result, position)} |"
         )
     return lines
 

@@ -22,6 +22,14 @@ from .portfolio_manager import (
 )
 from .pipeline import run_insights, run_news, run_portfolio, run_realtime, run_review
 from .search import search_instruments
+from .simulation import (
+    DEFAULT_INITIAL_CASH,
+    reset_simulation_account,
+    run_simulation_cycle,
+    set_simulation_enabled,
+    simulation_path_for,
+    simulation_view,
+)
 
 
 REPORT_KINDS = {
@@ -58,9 +66,13 @@ class WebApp:
             "indices": [instrument.__dict__ for instrument in config.indices],
             "watchlist": [instrument.__dict__ for instrument in config.watchlist],
             "portfolio_count": len(portfolio.positions) if portfolio else 0,
+            "simulation_count": len(self.simulation_view().get("trades", [])),
             "reports": self.list_reports(config),
             "assistant": assistant_status(),
         }
+
+    def simulation_path(self) -> Path:
+        return simulation_path_for(self.load_config(), self.portfolio_path)
 
     def list_reports(self, config: Optional[AgentConfig] = None) -> List[Dict[str, object]]:
         cfg = config or self.load_config()
@@ -168,6 +180,39 @@ class WebApp:
     def portfolio_view(self) -> Dict[str, object]:
         portfolio = self.load_portfolio() or Portfolio(cash=0, positions=[])
         return build_portfolio_view(portfolio, self)
+
+    def simulation_view(self, start: str = "", end: str = "") -> Dict[str, object]:
+        return simulation_view(
+            self.load_config(),
+            portfolio_path=self.portfolio_path,
+            path=self.simulation_path(),
+            start=start,
+            end=end,
+        )
+
+    def run_simulation(self) -> Dict[str, object]:
+        with self.lock:
+            return run_simulation_cycle(
+                self.load_config(),
+                self.load_portfolio(),
+                account_path=self.simulation_path(),
+            )
+
+    def reset_simulation(self, payload: Dict[str, object]) -> Dict[str, object]:
+        initial_cash = float(payload.get("initial_cash", DEFAULT_INITIAL_CASH) or DEFAULT_INITIAL_CASH)
+        with self.lock:
+            account = reset_simulation_account(self.simulation_path(), initial_cash)
+            view = self.simulation_view()
+            view["message"] = f"模拟账户已重置为 {account.initial_cash:.2f}"
+            return view
+
+    def set_simulation_enabled(self, payload: Dict[str, object]) -> Dict[str, object]:
+        enabled = bool(payload.get("enabled", True))
+        with self.lock:
+            set_simulation_enabled(self.simulation_path(), enabled)
+            view = self.simulation_view()
+            view["message"] = "模拟交易自动运行已开启" if enabled else "模拟交易自动运行已暂停"
+            return view
 
     def add_position(self, payload: Dict[str, object]) -> Dict[str, object]:
         if not self.portfolio_path:
@@ -478,6 +523,15 @@ def create_handler(app: WebApp):
             if parsed.path == "/api/portfolio":
                 self.send_json(app.portfolio_view())
                 return
+            if parsed.path == "/api/simulation":
+                query = parse_qs(parsed.query)
+                self.send_json(
+                    app.simulation_view(
+                        start=query.get("start", [""])[0],
+                        end=query.get("end", [""])[0],
+                    )
+                )
+                return
             self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
 
         def do_POST(self) -> None:
@@ -488,6 +542,9 @@ def create_handler(app: WebApp):
                 "/api/assistant",
                 "/api/portfolio/positions",
                 "/api/portfolio/trades",
+                "/api/simulation/run",
+                "/api/simulation/reset",
+                "/api/simulation/enabled",
             }:
                 self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
                 return
@@ -502,6 +559,12 @@ def create_handler(app: WebApp):
                     self.send_json(app.add_position(body))
                 elif parsed.path == "/api/portfolio/trades":
                     self.send_json(app.record_trade(body))
+                elif parsed.path == "/api/simulation/run":
+                    self.send_json(app.run_simulation())
+                elif parsed.path == "/api/simulation/reset":
+                    self.send_json(app.reset_simulation(body))
+                elif parsed.path == "/api/simulation/enabled":
+                    self.send_json(app.set_simulation_enabled(body))
                 else:
                     self.send_json(app.ask_assistant(body))
             except ValueError as exc:
@@ -1263,6 +1326,24 @@ INDEX_HTML = r"""<!doctype html>
       gap: 8px;
     }
 
+    .simulation-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .simulation-actions form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .simulation-actions input {
+      width: 150px;
+    }
+
     .metric {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1757,6 +1838,10 @@ INDEX_HTML = r"""<!doctype html>
           <button data-kind="positions">操作 <span id="count-positions">0</span></button>
           <button data-kind="portfolio">建议 <span id="count-portfolio">0</span></button>
         </div>
+        <div class="nav-group">
+          <div class="nav-group-label">训练</div>
+          <button data-kind="simulation">模拟 <span id="count-simulation">0</span></button>
+        </div>
       </nav>
       <div class="meta">
         <div><span>自选</span><strong id="watch-count">-</strong></div>
@@ -1840,7 +1925,7 @@ INDEX_HTML = r"""<!doctype html>
   </div>
 
   <script>
-    const routeKinds = ["realtime", "review", "news", "insights", "positions", "portfolio"];
+    const routeKinds = ["realtime", "review", "news", "insights", "positions", "portfolio", "simulation"];
     const initialKind = routeKinds.includes(window.location.hash.slice(1))
       ? window.location.hash.slice(1)
       : "realtime";
@@ -1868,7 +1953,8 @@ INDEX_HTML = r"""<!doctype html>
       news: "新闻热点",
       insights: "两周洞察",
       positions: "持仓操作",
-      portfolio: "持仓建议"
+      portfolio: "持仓建议",
+      simulation: "模拟交易"
     };
 
     const statusEl = document.getElementById("status");
@@ -1954,11 +2040,30 @@ INDEX_HTML = r"""<!doctype html>
         event.preventDefault();
         submitPortfolioTrade(form);
       }
+      if (form.id === "simulation-reset-form") {
+        event.preventDefault();
+        resetSimulation(form);
+      }
+      if (form.id === "simulation-filter-form") {
+        event.preventDefault();
+        loadSimulationPage("filter");
+      }
     });
     viewerEl.addEventListener("click", event => {
       const button = event.target.closest("[data-delete-position]");
-      if (!button) return;
-      deletePortfolioPosition(button.dataset.deletePosition);
+      if (button) {
+        deletePortfolioPosition(button.dataset.deletePosition);
+        return;
+      }
+      const simulationRun = event.target.closest("[data-run-simulation]");
+      if (simulationRun) {
+        runSimulation();
+        return;
+      }
+      const simulationToggle = event.target.closest("[data-toggle-simulation]");
+      if (simulationToggle) {
+        setSimulationAutoRun(simulationToggle.dataset.toggleSimulation === "on");
+      }
     });
 
     async function refreshState() {
@@ -1970,6 +2075,7 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("index-count").textContent = data.indices.length;
       document.getElementById("portfolio-count").textContent = data.portfolio_count;
       document.getElementById("count-positions").textContent = data.portfolio_count;
+      document.getElementById("count-simulation").textContent = data.simulation_count || 0;
       updateAssistantMode(data.assistant);
       renderWatchlistManager();
       updateCounts();
@@ -1985,6 +2091,9 @@ INDEX_HTML = r"""<!doctype html>
       } else if (state.kind === "positions") {
         clearRealtimeRefresh();
         return loadPortfolioPage(reason);
+      } else if (state.kind === "simulation") {
+        clearRealtimeRefresh();
+        return loadSimulationPage(reason);
       } else {
         clearRealtimeRefresh();
       }
@@ -2151,7 +2260,7 @@ INDEX_HTML = r"""<!doctype html>
         item.classList.toggle("active", item.dataset.kind === state.kind);
       });
       intervalControlEl.classList.toggle("is-hidden", state.kind !== "realtime");
-      refreshButtonEl.textContent = state.kind === "realtime" ? "立即刷新" : (state.kind === "positions" ? "刷新建议" : "重新抓取");
+      refreshButtonEl.textContent = state.kind === "realtime" ? "立即刷新" : (state.kind === "positions" ? "刷新建议" : (state.kind === "simulation" ? "刷新账户" : "重新抓取"));
       updateAutoRefreshButton();
       updateCountdown();
     }
@@ -2396,6 +2505,197 @@ INDEX_HTML = r"""<!doctype html>
       `;
     }
 
+    async function loadSimulationPage(reason = "enter") {
+      setStatus(reason === "filter" ? "筛选模拟记录" : "读取模拟账户");
+      try {
+        const form = document.getElementById("simulation-filter-form");
+        const params = form ? new URLSearchParams(new FormData(form)) : new URLSearchParams();
+        const query = params.toString();
+        const data = await getJson(`/api/simulation${query ? `?${query}` : ""}`);
+        displaySimulationPage(data);
+        document.getElementById("count-simulation").textContent = data.summary.trade_count || 0;
+        setStatus("准备就绪");
+        return data;
+      } catch (error) {
+        viewerEl.innerHTML = `<div class="empty">${escapeHtml(error.message || "模拟账户加载失败")}</div>`;
+        setStatus("模拟加载失败");
+        return null;
+      }
+    }
+
+    function displaySimulationPage(data) {
+      headingEl.textContent = "模拟交易";
+      subtitleEl.textContent = "默认资金 100 万；根据当前推荐数据自动纸面交易，并记录复盘和策略调优";
+      state.activeReport = "";
+      const summary = data.summary || {};
+      const filtered = data.filtered_summary || {};
+      const positions = data.positions || [];
+      const trades = data.trades || [];
+      const reviews = data.reviews || [];
+      const optimizations = data.optimizations || [];
+      const strategy = data.strategy || {};
+      const simulationEnabled = strategy.enabled !== false;
+      const positionRows = positions.length ? positions.map(position => `
+        <tr>
+          <td>${escapeHtml(position.symbol)}</td>
+          <td>${escapeHtml(position.name)}</td>
+          <td>${formatNumber(position.shares)}</td>
+          <td>${formatMoney(position.cost)}</td>
+          <td>${formatMoney(position.last_price)}</td>
+          <td>${formatMoney(position.market_value)}</td>
+          <td>${formatSignedMoney(position.unrealized_pnl)}</td>
+          <td>${escapeHtml(position.stop_loss_text || "-")}</td>
+          <td>${escapeHtml(position.target_price_text || "-")}</td>
+          <td class="is-long-text">${detailHtml(position.thesis || "-")}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="10">暂无模拟持仓。自动运行开启后，软件会在固定报告节奏后按策略做纸面交易。</td></tr>`;
+      const tradeRows = trades.length ? trades.map(trade => `
+        <tr>
+          <td>${escapeHtml(trade.timestamp)}</td>
+          <td>${escapeHtml(trade.symbol)}</td>
+          <td>${escapeHtml(trade.name)}</td>
+          <td>${trade.side === "buy" ? "买入" : "卖出"}</td>
+          <td>${formatNumber(trade.shares)}</td>
+          <td>${formatMoney(trade.price)}</td>
+          <td>${formatSignedMoney(trade.realized_pnl)}</td>
+          <td class="is-long-text">${detailHtml(trade.reason || "-")}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="8">筛选范围内暂无模拟交易。</td></tr>`;
+      const reviewRows = reviews.length ? reviews.map(review => `
+        <tr>
+          <td>${escapeHtml(review.timestamp)}</td>
+          <td>${escapeHtml(review.symbol)}</td>
+          <td>${review.side === "buy" ? "买入" : "卖出"}</td>
+          <td>${escapeHtml(review.title)}</td>
+          <td>${escapeHtml(review.entry_zone || "-")}</td>
+          <td>${formatMoney(review.stop_loss)}</td>
+          <td>${formatMoney(review.target_price)}</td>
+          <td class="is-long-text">${detailHtml(review.reason || "-")}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="8">暂无交易复盘。</td></tr>`;
+      const optimizationRows = optimizations.length ? optimizations.map(item => `
+        <tr>
+          <td>${escapeHtml(item.timestamp)}</td>
+          <td>${escapeHtml(item.symbol)}</td>
+          <td>${formatSignedMoney(item.realized_pnl)}</td>
+          <td class="is-long-text">${detailHtml(item.change || "-")}</td>
+        </tr>
+      `).join("") : `<tr><td colspan="4">暂无算法调优记录。</td></tr>`;
+      viewerEl.innerHTML = `
+        <div class="position-dashboard">
+          <section class="position-summary">
+            ${metricCard("初始资金", formatMoney(summary.initial_cash))}
+            ${metricCard("当前权益", formatMoney(summary.equity))}
+            ${metricCard("总收益率", formatPercent(summary.total_return))}
+            ${metricCard("已实现盈亏", formatSignedMoney(summary.realized_pnl))}
+              ${metricCard("浮动盈亏", formatSignedMoney(summary.unrealized_pnl))}
+          </section>
+          <section class="tool-section">
+            <strong>模拟控制</strong>
+            <div class="simulation-actions">
+              <button class="small-btn primary-btn" type="button" data-toggle-simulation="${simulationEnabled ? "off" : "on"}">${simulationEnabled ? "暂停自动运行" : "恢复自动运行"}</button>
+              <button class="small-btn" type="button" data-run-simulation>立即补跑一轮</button>
+              <form id="simulation-reset-form">
+                <input name="initial_cash" type="number" min="10000" step="10000" placeholder="起始金额，默认1000000" />
+                <button type="submit" class="small-btn">重置账户</button>
+              </form>
+              <form id="simulation-filter-form">
+                <input name="start" type="date" />
+                <input name="end" type="date" />
+                <button type="submit" class="small-btn">按时间筛选</button>
+              </form>
+            </div>
+            <div class="position-note">
+              自动运行：${simulationEnabled ? "已开启" : "已暂停"}。策略参数：入场概率 ≥ ${formatPercent(strategy.min_up_probability)}；单笔仓位 ${formatPercent(strategy.position_size_pct)}；最多 ${escapeHtml(strategy.max_positions || "-")} 只。最近运行：${escapeHtml(data.last_run_at || "尚未运行")}。
+              筛选区间交易 ${formatNumber(filtered.trade_count || 0)} 笔，已实现盈亏 ${formatSignedMoney(filtered.realized_pnl)}，胜率 ${formatPercent(filtered.win_rate)}。
+            </div>
+          </section>
+          <section>
+            <h2>模拟持仓</h2>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead><tr><th>代码</th><th>名称</th><th>股数</th><th>成本</th><th>现价</th><th>市值</th><th>浮盈</th><th>止损价</th><th>目标价</th><th>交易逻辑</th></tr></thead>
+                <tbody>${positionRows}</tbody>
+              </table>
+            </div>
+          </section>
+          <section>
+            <h2>模拟交易</h2>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead><tr><th>时间</th><th>代码</th><th>名称</th><th>方向</th><th>股数</th><th>价格</th><th>已实现盈亏</th><th>原因</th></tr></thead>
+                <tbody>${tradeRows}</tbody>
+              </table>
+            </div>
+          </section>
+          <section>
+            <h2>交易后复盘</h2>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead><tr><th>时间</th><th>代码</th><th>方向</th><th>标题</th><th>建仓区间</th><th>止损价</th><th>目标价</th><th>复盘</th></tr></thead>
+                <tbody>${reviewRows}</tbody>
+              </table>
+            </div>
+          </section>
+          <section>
+            <h2>算法调优记录</h2>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead><tr><th>时间</th><th>代码</th><th>交易盈亏</th><th>调优说明</th></tr></thead>
+                <tbody>${optimizationRows}</tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      `;
+    }
+
+    async function runSimulation() {
+      setBusy(true);
+      setStatus("模拟交易运行中");
+      try {
+        const data = await postJson("/api/simulation/run", {});
+        displaySimulationPage(data);
+        document.getElementById("count-simulation").textContent = data.summary.trade_count || 0;
+        const cycle = data.cycle || {};
+        setStatus(`模拟完成：新增交易 ${cycle.new_trades || 0} 笔`);
+      } catch (error) {
+        setStatus(error.message || "模拟运行失败");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function setSimulationAutoRun(enabled) {
+      setBusy(true);
+      setStatus(enabled ? "恢复模拟自动运行" : "暂停模拟自动运行");
+      try {
+        const data = await postJson("/api/simulation/enabled", { enabled });
+        displaySimulationPage(data);
+        setStatus(data.message || "模拟设置已更新");
+      } catch (error) {
+        setStatus(error.message || "模拟设置失败");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function resetSimulation(form) {
+      const payload = formPayload(form);
+      setBusy(true);
+      setStatus("重置模拟账户");
+      try {
+        const data = await postJson("/api/simulation/reset", payload);
+        displaySimulationPage(data);
+        document.getElementById("count-simulation").textContent = 0;
+        setStatus(data.message || "模拟账户已重置");
+      } catch (error) {
+        setStatus(error.message || "重置失败");
+      } finally {
+        setBusy(false);
+      }
+    }
+
     async function addPortfolioPosition(form) {
       const payload = formPayload(form);
       setBusy(true);
@@ -2472,6 +2772,11 @@ INDEX_HTML = r"""<!doctype html>
     function formatNumber(value) {
       const number = Number(value || 0);
       return number.toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+    }
+
+    function formatPercent(value) {
+      const number = Number(value || 0);
+      return `${(number * 100).toFixed(2)}%`;
     }
 
     function detailHtml(text) {

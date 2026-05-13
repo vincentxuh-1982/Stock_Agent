@@ -20,6 +20,7 @@ from .pipeline import (
     run_realtime_push,
 )
 from .portfolio_manager import load_portfolio_file
+from .simulation import run_simulation_cycle, simulation_path_for
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,13 @@ def run_scheduler(
             maybe_run("midday_news", current_config, state, now, lambda: run_news(current_config))
             maybe_run("evening_news", current_config, state, now, lambda: run_news(current_config))
             maybe_run_biweekly_insights(current_config, state, now)
-            maybe_run_timed_pushes(current_config, current_portfolio, state, now)
+            maybe_run_timed_pushes(
+                current_config,
+                current_portfolio,
+                state,
+                now,
+                portfolio_path=portfolio_path,
+            )
             save_state(state_path, state)
         time.sleep(poll_seconds)
 
@@ -147,6 +154,7 @@ def maybe_run_timed_pushes(
     portfolio: Optional[Portfolio],
     state: Dict[str, str],
     now: datetime,
+    portfolio_path: Optional[str] = None,
 ) -> None:
     for job in TIMED_PUSH_JOBS:
         if not scheduled_time_due(job.name, config, now, default_time=job.default_time):
@@ -155,9 +163,17 @@ def maybe_run_timed_pushes(
         if state.get(state_key):
             continue
         path = run_timed_push_job(job, config, portfolio)
+        simulation_message = run_timed_simulation(config, portfolio, portfolio_path)
         push_result = notify_report(config, job.title, path)
-        state[state_key] = f"{path}; push={push_result.sent}; {push_result.message}"
-        print(f"{job.title}: {path}; push={push_result.sent}; {push_result.message}", flush=True)
+        state[state_key] = (
+            f"{path}; simulation={simulation_message}; "
+            f"push={push_result.sent}; {push_result.message}"
+        )
+        print(
+            f"{job.title}: {path}; simulation={simulation_message}; "
+            f"push={push_result.sent}; {push_result.message}",
+            flush=True,
+        )
 
 
 def run_timed_push_job(
@@ -175,6 +191,23 @@ def run_timed_push_job(
         title=job.title,
         focus_note=job.focus_note,
     )
+
+
+def run_timed_simulation(
+    config: AgentConfig,
+    portfolio: Optional[Portfolio],
+    portfolio_path: Optional[str],
+) -> str:
+    try:
+        result = run_simulation_cycle(
+            config,
+            portfolio,
+            account_path=simulation_path_for(config, portfolio_path),
+        )
+        cycle = result.get("cycle", {})
+        return f"{cycle.get('source', 'unknown')} new_trades={cycle.get('new_trades', 0)}"
+    except Exception as exc:
+        return f"failed: {exc}"
 
 
 def maybe_run_biweekly_insights(
