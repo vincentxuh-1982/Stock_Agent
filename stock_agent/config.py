@@ -72,6 +72,35 @@ class PushConfig:
 
 
 @dataclass
+class WebConfig:
+    auth_enabled: bool = False
+    username: str = "stock"
+    password: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, object]) -> "WebConfig":
+        enabled_value = data.get("auth_enabled", data.get("enabled", False))
+        return cls(
+            auth_enabled=bool(enabled_value),
+            username=str(data.get("username", "stock")).strip() or "stock",
+            password=str(data.get("password", "")).strip(),
+        )
+
+    def with_environment(self) -> "WebConfig":
+        enabled_value = os.environ.get("STOCK_AGENT_WEB_AUTH_ENABLED", "")
+        if enabled_value:
+            auth_enabled = enabled_value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            auth_enabled = self.auth_enabled
+        return WebConfig(
+            auth_enabled=auth_enabled,
+            username=os.environ.get("STOCK_AGENT_WEB_USERNAME", self.username).strip()
+            or "stock",
+            password=os.environ.get("STOCK_AGENT_WEB_PASSWORD", self.password).strip(),
+        )
+
+
+@dataclass
 class AgentConfig:
     market: str = "CN"
     timezone: str = "Asia/Shanghai"
@@ -86,6 +115,7 @@ class AgentConfig:
     theme_stock_map: Dict[str, List[str]] = field(default_factory=dict)
     schedules: Dict[str, str] = field(default_factory=dict)
     push: PushConfig = field(default_factory=PushConfig)
+    web: WebConfig = field(default_factory=WebConfig)
 
     @classmethod
     def from_dict(cls, data: Dict[str, object]) -> "AgentConfig":
@@ -110,6 +140,7 @@ class AgentConfig:
                 str(k): str(v) for k, v in dict(data.get("schedules", {})).items()
             },
             push=PushConfig.from_dict(dict(data.get("push", {}))).with_environment(),
+            web=WebConfig.from_dict(dict(data.get("web", {}))).with_environment(),
         )
 
 

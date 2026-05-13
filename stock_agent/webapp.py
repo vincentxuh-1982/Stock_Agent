@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import re
+import secrets
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,6 +53,35 @@ class WebApp:
 
     def load_config(self) -> AgentConfig:
         return load_config(self.config_path)
+
+    def auth_credentials(self) -> Optional[tuple[str, str]]:
+        web_config = self.load_config().web
+        if not web_config.auth_enabled or not web_config.password:
+            return None
+        return web_config.username, web_config.password
+
+    def check_auth_header(self, authorization: Optional[str]) -> bool:
+        credentials = self.auth_credentials()
+        if credentials is None:
+            return True
+        if not authorization:
+            return False
+        try:
+            scheme, encoded = authorization.split(" ", 1)
+        except ValueError:
+            return False
+        if scheme.lower() != "basic":
+            return False
+        try:
+            decoded = base64.b64decode(encoded.strip(), validate=True).decode("utf-8")
+            username, password = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError):
+            return False
+        expected_username, expected_password = credentials
+        return secrets.compare_digest(username, expected_username) and secrets.compare_digest(
+            password,
+            expected_password,
+        )
 
     def load_portfolio(self) -> Optional[Portfolio]:
         if not self.portfolio_path:
@@ -491,6 +522,11 @@ def create_handler(app: WebApp):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path == "/api/health":
+                self.send_json({"ok": True})
+                return
+            if not self.ensure_authorized():
+                return
             if parsed.path == "/":
                 self.send_text(INDEX_HTML, "text/html; charset=utf-8")
                 return
@@ -535,6 +571,8 @@ def create_handler(app: WebApp):
             self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
 
         def do_POST(self) -> None:
+            if not self.ensure_authorized():
+                return
             parsed = urlparse(self.path)
             if parsed.path not in {
                 "/api/run",
@@ -573,6 +611,8 @@ def create_handler(app: WebApp):
                 self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
         def do_DELETE(self) -> None:
+            if not self.ensure_authorized():
+                return
             parsed = urlparse(self.path)
             if parsed.path not in {"/api/portfolio/positions", "/api/instruments"}:
                 self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
@@ -601,6 +641,7 @@ def create_handler(app: WebApp):
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -609,6 +650,7 @@ def create_handler(app: WebApp):
             body = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -617,9 +659,26 @@ def create_handler(app: WebApp):
             body = text.encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def ensure_authorized(self) -> bool:
+            if app.check_auth_header(self.headers.get("Authorization")):
+                return True
+            body = "Stock Agent 需要登录后访问。".encode("utf-8")
+            self.send_response(HTTPStatus.UNAUTHORIZED)
+            self.send_header(
+                "WWW-Authenticate",
+                'Basic realm="Stock Agent", charset="UTF-8"',
+            )
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
 
         def log_message(self, format: str, *args) -> None:
             return

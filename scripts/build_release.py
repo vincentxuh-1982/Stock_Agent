@@ -206,7 +206,7 @@ def launcher_script() -> str:
           done
         fi
 
-        if /usr/bin/curl -fsS "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+        if /usr/bin/curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
           /usr/bin/open "$URL"
           exit 0
         fi
@@ -228,7 +228,7 @@ def launcher_script() -> str:
 
         SERVER_PID=$!
         for _ in {{1..40}}; do
-          if /usr/bin/curl -fsS "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+          if /usr/bin/curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
             /usr/bin/open "$URL"
             break
           fi

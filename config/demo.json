@@ -49,5 +49,10 @@
     "server_chan_send_key": "",
     "pushplus_token": "",
     "max_chars": 12000
+  },
+  "web": {
+    "auth_enabled": false,
+    "username": "stock",
+    "password": ""
   }
 }

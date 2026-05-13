@@ -111,6 +111,17 @@ export OPENAI_MODEL="gpt-4o-mini"
 python3 scripts/install_launch_agents.py --app "$HOME/Applications/Stock Agent.app"
 ```
 
+## 远程访问
+
+远程查看完整页面时，先给 Web 服务开启登录保护，再通过 Cloudflare Tunnel 暴露一个临时 HTTPS 地址：
+
+```bash
+brew install cloudflared
+python3 scripts/configure_remote_access.py --enable-tunnel
+```
+
+脚本会把账号、密码和远程 URL 打印出来。远程入口仍然访问本机 `127.0.0.1:8765` 的同一个软件页面，只是外层多了一条 HTTPS 隧道和 Basic Auth 登录保护；本地持仓、交易流水和报告不会上传到代码仓库。
+
 ## 微信推送
 
 在 `~/Library/Application Support/StockAgent/config/local.json` 或开发态 `config/local.json` 中配置 `push`：
