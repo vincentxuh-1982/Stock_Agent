@@ -70,6 +70,7 @@ def run_daily_digest(
 def run_opening_brief_digest(config: AgentConfig, portfolio: Optional[Portfolio]) -> str:
     provider = provider_from_config(config)
     errors: List[str] = []
+    index_results = analyze_many(config.indices, provider, config, errors=errors)
     watch_results = analyze_many(config.watchlist, provider, config, errors=errors)
     active_positions = active_portfolio_positions(portfolio)
     position_instruments = instruments_for_positions(config, active_positions)
@@ -81,6 +82,7 @@ def run_opening_brief_digest(config: AgentConfig, portfolio: Optional[Portfolio]
         limit=3,
     )
     content = render_opening_brief(
+        index_results=index_results,
         watch_results=watch_results,
         position_results=position_results,
         positions=active_positions,
@@ -111,6 +113,7 @@ def run_realtime_push_digest(
 
 
 def render_opening_brief(
+    index_results: List[AnalysisResult],
     watch_results: List[AnalysisResult],
     position_results: List[AnalysisResult],
     positions: List[Position],
@@ -124,12 +127,24 @@ def render_opening_brief(
         "# 开盘早知道",
         "",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"- 关注范围：持仓股 {len(positions)}；自选股 {len(watch_results)}",
+        f"- 关注范围：指数 {len(index_results)}；持仓股 {len(positions)}；自选股 {len(watch_results)}",
         "- 依据：上一交易日收盘结构、短线概率、持仓成本和近三日新闻；开盘后需用实时走势修正。",
         "",
-        "## 持仓股票今日策略",
+        "## 指数盘前判断",
         "",
     ]
+    if index_results:
+        lines.extend(render_compact_analysis_table(index_results, include_entry=False))
+    else:
+        lines.append("暂未获取到指数历史数据，开盘后用实时指数快照修正。")
+
+    lines.extend(
+        [
+            "",
+            "## 持仓股票今日策略",
+            "",
+        ]
+    )
     if positions:
         lines.extend(
             [
@@ -297,16 +312,33 @@ def render_realtime_push_digest(
 ) -> str:
     position_by_symbol = {position.symbol: position for position in positions}
     result_by_symbol = {result.instrument.symbol: result for result in results}
+    index_results = [
+        result
+        for result in results
+        if is_cn_index(result.instrument) or is_hk_index(result.instrument)
+    ]
     lines = [
         f"# {title}",
         "",
         f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"- 交易中标的：{len(results)}；持仓股：{len(positions)}",
+        f"- 交易中指数：{len(index_results)}；交易中个股/ETF：{len(results) - len(index_results)}；持仓股：{len(positions)}",
         f"- 关注重点：{focus_note}",
         "",
-        "## 持仓股策略",
+        "## 指数实时判断",
         "",
     ]
+    if index_results:
+        lines.extend(render_realtime_index_table(index_results))
+    else:
+        lines.append("当前没有处于交易时段并成功获取行情的指数。")
+
+    lines.extend(
+        [
+            "",
+            "## 持仓股策略",
+            "",
+        ]
+    )
     if positions:
         lines.extend(
             [
@@ -358,6 +390,19 @@ def render_realtime_push_digest(
     lines.extend(render_errors(errors))
     lines.extend(["", "本简报用于盘中跟踪和风险提醒，不构成投资建议。"])
     return "\n".join(lines) + "\n"
+
+
+def render_realtime_index_table(results: Sequence[RealtimeResult]) -> List[str]:
+    lines = [
+        "| 指数 | 现价 | 涨跌 | 状态 | 当日概率 | 支撑/压力 | 条件说明 |",
+        "| --- | ---: | ---: | --- | --- | --- | --- |",
+    ]
+    for result in results:
+        quote = result.quote
+        lines.append(
+            f"| {result.instrument.name} | {quote.price:.2f} | {quote.change_pct:.2%} | {result.status} | {forecast_probability_text(result.intraday_forecast)} | {result.support:.2f}-{result.resistance:.2f} | {forecast_condition_text(result.intraday_forecast)} |"
+        )
+    return lines
 
 
 def select_opening_watch_focus(results: Sequence[AnalysisResult]) -> List[AnalysisResult]:

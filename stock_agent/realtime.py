@@ -6,7 +6,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .analyzer import analyze_instrument
 from .config import AgentConfig
@@ -26,11 +26,12 @@ from .trading_hours import split_by_session
 
 def run_realtime_analysis(
     config: AgentConfig,
+    instruments: Optional[Sequence[Instrument]] = None,
 ) -> Tuple[List[RealtimeResult], List[MarketSessionStatus], List[str]]:
     provider = provider_from_config(config)
     quote_provider = realtime_provider_from_config(config, provider)
     errors: List[str] = []
-    instruments = unique_instruments(config.indices + config.watchlist)
+    instruments = unique_instruments(instruments or (config.indices + config.watchlist))
     active_sessions, inactive_sessions = split_by_session(
         instruments,
         timezone=config.timezone,

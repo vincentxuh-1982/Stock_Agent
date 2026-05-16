@@ -39,6 +39,50 @@
       "themes": ["新能源"]
     }
   ],
+  "etf_pools": {
+    "宽基指数ETF池": [
+      {
+        "symbol": "510300",
+        "name": "沪深300ETF",
+        "kind": "a_etf",
+        "themes": ["宽基", "A股"]
+      },
+      {
+        "symbol": "159915",
+        "name": "创业板ETF",
+        "kind": "a_etf",
+        "themes": ["创业板", "成长"]
+      }
+    ],
+    "科技成长ETF池": [
+      {
+        "symbol": "512760",
+        "name": "芯片ETF",
+        "kind": "a_etf",
+        "themes": ["半导体", "科技"]
+      },
+      {
+        "symbol": "159819",
+        "name": "人工智能ETF",
+        "kind": "a_etf",
+        "themes": ["AI", "算力"]
+      }
+    ],
+    "防守观察ETF池": [
+      {
+        "symbol": "512880",
+        "name": "证券ETF",
+        "kind": "a_etf",
+        "themes": ["券商"]
+      },
+      {
+        "symbol": "512170",
+        "name": "医疗ETF",
+        "kind": "a_etf",
+        "themes": ["医药"]
+      }
+    ]
+  },
   "news_sources": [
     {
       "name": "示例 RSS",

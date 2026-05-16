@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,7 +18,8 @@ from .digest import (
     select_realtime_entry_opportunities,
     unique_instruments,
 )
-from .models import AnalysisResult, Instrument, Portfolio, Position, RealtimeResult
+from .models import AnalysisResult, Instrument, Portfolio, Position, RealtimeResult, StockCandidate
+from .news import fetch_hot_candidates
 from .prediction import forecast_probability_text
 from .price_levels import PricePlan, analysis_price_plan, price_or_dash, realtime_price_plan
 from .realtime import run_realtime_analysis
@@ -128,6 +130,9 @@ def default_strategy() -> Dict[str, object]:
         "sell_down_probability": 0.58,
         "loss_tighten_step": 0.01,
         "review_window": 20,
+        "use_hot_candidates": True,
+        "use_etf_pools": True,
+        "candidate_limit": 16,
     }
 
 
@@ -197,14 +202,14 @@ def run_simulation_cycle(
     trades_before = len(account.trades)
     errors: List[str] = []
 
-    realtime_results, _, realtime_errors = run_realtime_analysis(config)
+    instruments = simulation_instruments(config, portfolio, account)
+    realtime_results, _, realtime_errors = run_realtime_analysis(config, instruments=instruments)
     errors.extend(realtime_errors)
     if realtime_results:
         run_realtime_simulation(account, realtime_results, timestamp)
         source = "realtime"
     else:
         provider = provider_from_config(config)
-        instruments = simulation_instruments(config, portfolio, account)
         analysis_results = analyze_many(instruments, provider, config, errors=errors)
         run_analysis_simulation(account, analysis_results, portfolio, timestamp)
         source = "analysis"
@@ -237,6 +242,7 @@ def run_realtime_simulation(
         result
         for result in select_realtime_entry_opportunities(results)
         if result.instrument.symbol not in held
+        and is_simulation_buyable(result.instrument)
     ]
     for result in candidates:
         if len(account.positions) >= int(account.strategy["max_positions"]):
@@ -271,6 +277,7 @@ def run_analysis_simulation(
         result
         for result in select_entry_opportunities(results)
         if result.instrument.symbol not in held
+        and is_simulation_buyable(result.instrument)
     ]
     for result in candidates:
         if len(account.positions) >= int(account.strategy["max_positions"]):
@@ -596,6 +603,11 @@ def simulation_instruments(
 ) -> List[Instrument]:
     known = {item.symbol: item for item in config.watchlist + config.indices}
     instruments = list(config.watchlist)
+    if bool(account.strategy.get("use_etf_pools", True)):
+        instruments.extend(etf_pool_instruments(config))
+    instruments.extend(report_candidate_instruments(config, int(account.strategy["candidate_limit"])))
+    if bool(account.strategy.get("use_hot_candidates", True)):
+        instruments.extend(hot_candidate_instruments(int(account.strategy["candidate_limit"])))
     if portfolio:
         instruments.extend(instruments_for_positions(config, active_portfolio_positions(portfolio)))
     for position in account.positions:
@@ -612,6 +624,94 @@ def simulation_instruments(
                 )
             )
     return unique_instruments(instruments)
+
+
+def etf_pool_instruments(config: AgentConfig) -> List[Instrument]:
+    output: List[Instrument] = []
+    for instruments in config.etf_pools.values():
+        output.extend(instruments)
+    return output
+
+
+def hot_candidate_instruments(limit: int) -> List[Instrument]:
+    try:
+        candidates = fetch_hot_candidates(limit=limit, keyword_limit=min(8, limit))
+    except Exception:
+        return []
+    instruments = []
+    for candidate in candidates:
+        if not candidate.symbol.strip().isdigit():
+            continue
+        instruments.append(instrument_from_candidate(candidate))
+        if len(instruments) >= limit:
+            break
+    return instruments
+
+
+REPORT_CANDIDATE_RE = re.compile(
+    r"[-|]\s*(?P<symbol>\d{5,6})\s+(?P<name>[^（|]+?)（(?P<market>A|HK|CN)"
+)
+
+
+def report_candidate_instruments(config: AgentConfig, limit: int) -> List[Instrument]:
+    report_dir = Path(config.output_dir)
+    names = [
+        "news_hotspots_latest.md",
+        "daily_digest_latest.md",
+        "biweekly_insights_latest.md",
+        "market_review_latest.md",
+    ]
+    output: List[Instrument] = []
+    seen = set()
+    for name in names:
+        path = report_dir / name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for match in REPORT_CANDIDATE_RE.finditer(text):
+            symbol = match.group("symbol").strip()
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            market = match.group("market")
+            output.append(
+                instrument_from_candidate(
+                    StockCandidate(
+                        symbol=symbol,
+                        name=match.group("name").strip(),
+                        market="HK" if market == "HK" else "A",
+                        reason=f"{name} 推荐/热点候选",
+                    )
+                )
+            )
+            if len(output) >= limit:
+                return output
+    return output
+
+
+def instrument_from_candidate(candidate: StockCandidate) -> Instrument:
+    market = candidate.market.upper()
+    if market == "HK":
+        symbol = candidate.symbol.zfill(5)
+        return Instrument(
+            symbol=symbol,
+            provider_symbol=symbol,
+            name=candidate.name,
+            kind="hk_stock",
+            market="HK",
+            themes=["推荐候选"],
+        )
+    return Instrument(
+        symbol=candidate.symbol.zfill(6),
+        name=candidate.name,
+        kind="a_stock",
+        market="CN",
+        themes=["推荐候选"],
+    )
+
+
+def is_simulation_buyable(instrument: Instrument) -> bool:
+    return instrument.kind.lower() not in {"index", "cn_index", "a_index", "hk_index"}
 
 
 def account_equity(account: SimulationAccount) -> float:

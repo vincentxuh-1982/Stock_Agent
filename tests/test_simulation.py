@@ -3,10 +3,15 @@ from pathlib import Path
 from unittest import TestCase
 
 from stock_agent.config import load_config
+from stock_agent.config import AgentConfig
+from stock_agent.models import Instrument
 from stock_agent.simulation import (
     DEFAULT_INITIAL_CASH,
+    SimulationAccount,
+    default_strategy,
     reset_simulation_account,
     run_simulation_cycle,
+    simulation_instruments,
     simulation_view,
 )
 
@@ -66,3 +71,38 @@ class SimulationTests(TestCase):
 
             self.assertEqual(len(view["trades"]), 1)
             self.assertEqual(view["filtered_summary"]["realized_pnl"], -50)
+
+    def test_simulation_instruments_include_etf_pools_and_report_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report_dir = Path(tmp) / "reports"
+            report_dir.mkdir()
+            (report_dir / "news_hotspots_latest.md").write_text(
+                "- 688001 华兴科技（A，排名 1，涨跌 3.20%）：新闻热点候选\n",
+                encoding="utf-8",
+            )
+            strategy = default_strategy()
+            strategy["use_hot_candidates"] = False
+            config = AgentConfig(
+                output_dir=str(report_dir),
+                watchlist=[],
+                etf_pools={
+                    "AI池": [
+                        Instrument(
+                            symbol="159819",
+                            name="人工智能ETF",
+                            kind="a_etf",
+                            themes=["AI"],
+                        )
+                    ]
+                },
+            )
+
+            instruments = simulation_instruments(
+                config,
+                portfolio=None,
+                account=SimulationAccount(strategy=strategy),
+            )
+
+            symbols = {instrument.symbol for instrument in instruments}
+            self.assertIn("159819", symbols)
+            self.assertIn("688001", symbols)

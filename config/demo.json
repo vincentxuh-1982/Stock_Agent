@@ -25,6 +25,16 @@
       "themes": ["银行", "红利"]
     }
   ],
+  "etf_pools": {
+    "演示ETF池": [
+      {
+        "symbol": "DEMO_ETF",
+        "name": "演示行业ETF",
+        "kind": "a_etf",
+        "themes": ["AI", "ETF"]
+      }
+    ]
+  },
   "news_sources": [],
   "theme_stock_map": {
     "AI": ["DEMO_GROWTH"],

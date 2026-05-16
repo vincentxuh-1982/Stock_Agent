@@ -186,6 +186,16 @@ class AkshareMarketDataProvider(MarketDataProvider):
                 )
         elif kind == "hk_index":
             frame = call_with_retries(lambda: ak.stock_hk_index_daily_sina(symbol=symbol))
+        elif kind in {"etf", "a_etf", "cn_etf"}:
+            frame = call_with_retries(
+                lambda: ak.fund_etf_hist_em(
+                    symbol=symbol.zfill(6),
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust=self.adjust if self.adjust in {"qfq", "hfq"} else "",
+                )
+            )
         else:
             a_symbol = normalize_a_symbol(symbol)
             try:

@@ -111,6 +111,7 @@ class AgentConfig:
     adjust: str = "qfq"
     indices: List[Instrument] = field(default_factory=list)
     watchlist: List[Instrument] = field(default_factory=list)
+    etf_pools: Dict[str, List[Instrument]] = field(default_factory=dict)
     news_sources: List[NewsSource] = field(default_factory=list)
     theme_stock_map: Dict[str, List[str]] = field(default_factory=dict)
     schedules: Dict[str, str] = field(default_factory=dict)
@@ -129,6 +130,10 @@ class AgentConfig:
             adjust=str(data.get("adjust", "qfq")),
             indices=[Instrument.from_dict(x) for x in data.get("indices", [])],
             watchlist=[Instrument.from_dict(x) for x in data.get("watchlist", [])],
+            etf_pools={
+                str(pool): [Instrument.from_dict(item) for item in instruments]
+                for pool, instruments in dict(data.get("etf_pools", {})).items()
+            },
             news_sources=[
                 NewsSource.from_dict(x) for x in data.get("news_sources", [])
             ],
